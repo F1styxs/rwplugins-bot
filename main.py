@@ -10,19 +10,19 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Отключаем обработку сигналов для совместимости с Render
-import signal
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
+# УБИРАЕМ signal.signal - он не нужен!
 
 # Настройки
 logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = 7130414548  # ТВОЙ ID
 
-# Проверка наличия токена
+# Проверка токена
 if not BOT_TOKEN:
-    print("❌ ОШИБКА: BOT_TOKEN не найден в переменных окружения!")
+    print("❌ Токен не найден!")
     exit(1)
+
+print(f"✅ Токен загружен: {BOT_TOKEN[:10]}...")
 
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
@@ -132,7 +132,7 @@ def increment_downloads(plugin_id, user_id):
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
     cur.execute("UPDATE plugins SET downloads_count = downloads_count + 1 WHERE id = ?", (plugin_id,))
-    cur.execute("INSERT INTO downloads_stats (plugin_id, user_id, downloaded_at) VALUES (?, ?, ?)", (plugin_id, user_id, datetime.now()))
+    cur.execute("INSERT INTO downloads_stats (plugin_id, user_id) VALUES (?, ?)", (plugin_id, user_id))
     conn.commit()
     conn.close()
     update_user_downloads(user_id)
@@ -143,9 +143,7 @@ def get_plugin_stats(plugin_id):
     cur.execute("SELECT downloads_count FROM plugins WHERE id = ?", (plugin_id,))
     total = cur.fetchone()
     conn.close()
-    if total:
-        return total[0]
-    return 0
+    return total[0] if total else 0
 
 def create_ticket(user_id, question):
     conn = sqlite3.connect('shop.db')
@@ -194,17 +192,10 @@ def add_admin(admin_id, added_by):
     conn.commit()
     conn.close()
 
-def remove_admin(admin_id):
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute("DELETE FROM admins WHERE user_id = ?", (admin_id,))
-    conn.commit()
-    conn.close()
-
 def get_admins():
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
-    cur.execute("SELECT user_id, added_by, added_at FROM admins")
+    cur.execute("SELECT user_id FROM admins")
     data = cur.fetchall()
     conn.close()
     return data
@@ -359,7 +350,7 @@ async def products_page_callback(callback: types.CallbackQuery):
     page = int(callback.data.split("_")[2])
     await show_products_page(callback, page)
 
-# ---------- ПОКУПКА / СКАЧИВАНИЕ ----------
+# ---------- ПОКУПКА ----------
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_plugin(callback: types.CallbackQuery):
     plugin_id = int(callback.data.split("_")[1])
@@ -387,7 +378,7 @@ async def buy_plugin(callback: types.CallbackQuery):
                     f"⬇️ Всего скачиваний: {get_plugin_stats(plugin_id)}"
         )
     else:
-        await callback.message.answer("❌ Файл временно недоступен. Обратитесь в поддержку.")
+        await callback.message.answer("❌ Файл временно недоступен.")
     await callback.answer()
 
 # ---------- ПРОФИЛЬ ----------
@@ -408,12 +399,10 @@ async def show_profile(callback: types.CallbackQuery):
 async def show_rules(callback: types.CallbackQuery):
     text = "📜 **Правила магазина RWPlugins**\n\n"
     text += "1. Запрещён возврат средств после скачивания\n"
-    text += "2. Все плагины проверены на вирусы\n"
+    text += "2. Все плагины проверены\n"
     text += "3. Техподдержка отвечает в течение 24 часов\n"
-    text += "4. Запрещено распространять плагины\n"
-    text += "5. При нарушении правил - бан без возврата\n\n"
+    text += "4. Запрещено распространять плагины\n\n"
     text += "По всем вопросам: @owner_rwplugins"
-    
     await callback.message.edit_text(text, reply_markup=back_button())
 
 # ---------- О МАГАЗИНЕ ----------
@@ -425,12 +414,10 @@ async def about_shop(callback: types.CallbackQuery):
     text += "• PvP системы\n"
     text += "• Экономика\n"
     text += "• Босс-арены\n"
-    text += "• Кейсы и лутбоксы\n\n"
-    text += "💬 По вопросам сотрудничества: @owner_rwplugins"
-    
+    text += "• Кейсы и лутбоксы"
     await callback.message.edit_text(text, reply_markup=back_button())
 
-# ---------- ПОДДЕРЖКА (ТИКЕТЫ) ----------
+# ---------- ПОДДЕРЖКА ----------
 @dp.callback_query(F.data == "support")
 async def support_menu(callback: types.CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -439,92 +426,53 @@ async def support_menu(callback: types.CallbackQuery):
     ])
     await callback.message.edit_text(
         "🆘 **Техническая поддержка RWPlugins**\n\n"
-        "Нажмите «Создать тикет», чтобы отправить вопрос.",
+        "Нажмите «Создать тикет»",
         reply_markup=kb
     )
 
 @dp.callback_query(F.data == "create_ticket")
 async def start_ticket(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    if is_ticket_open(user_id):
+    if is_ticket_open(callback.from_user.id):
         await callback.answer("❌ У вас уже есть активный тикет!")
         return
-    await callback.message.edit_text("📝 Напишите ваш вопрос в одном сообщении:")
+    await callback.message.edit_text("📝 Напишите ваш вопрос:")
     await state.set_state(TicketQuestion.waiting_for_question)
     await callback.answer()
 
 @dp.message(StateFilter(TicketQuestion.waiting_for_question), F.text)
 async def receive_question(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    question = message.text
-    
-    create_ticket(user_id, question)
-    
-    # Отправляем владельцу
-    try:
-        await bot.send_message(
-            OWNER_ID,
-            f"🆕 **Новый тикет RWPlugins**\n\n"
-            f"👤 От: {message.from_user.full_name}\n"
-            f"🆔 ID: {user_id}\n"
-            f"📩 Вопрос:\n{question}"
-        )
-    except:
-        pass
-    
-    # Отправляем всем админам
-    for admin_id, _, _ in get_admins():
-        try:
-            await bot.send_message(
-                admin_id,
-                f"🆕 **Новый тикет RWPlugins**\n\n"
-                f"👤 От: {message.from_user.full_name}\n"
-                f"🆔 ID: {user_id}\n"
-                f"📩 Вопрос:\n{question}"
-            )
-        except:
-            pass
-    
-    await message.answer(
-        "✅ **Тикет создан!**\n\n"
-        "Техподдержка RWPlugins ответит вам в ближайшее время."
-    )
+    create_ticket(message.from_user.id, message.text)
+    await message.answer("✅ Тикет создан! Администратор ответит.")
     await state.clear()
 
 # ---------- АДМИН-ПАНЕЛЬ ----------
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ У вас нет прав администратора!")
+        await callback.answer("⛔ Нет доступа")
         return
-    await callback.message.edit_text("⚙️ **Панель администратора RWPlugins**", reply_markup=admin_panel_menu())
+    await callback.message.edit_text("⚙️ **Панель администратора**", reply_markup=admin_panel_menu())
 
-# Загрузка плагина
 @dp.callback_query(F.data == "admin_upload")
 async def admin_upload_start(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет прав")
-        return
-    await callback.message.edit_text("📎 Отправьте файл плагина (zip, py, jar, и т.д.):")
+    await callback.message.edit_text("📎 Отправьте файл плагина:")
     await state.set_state(UploadPlugin.waiting_for_file)
-    await callback.answer()
 
 @dp.message(StateFilter(UploadPlugin.waiting_for_file), F.document)
 async def get_plugin_file(message: types.Message, state: FSMContext):
     doc = message.document
-    file_name = doc.file_name
-    file_path = f"plugins/{file_name}"
+    file_path = f"plugins/{doc.file_name}"
     os.makedirs("plugins", exist_ok=True)
     file = await bot.get_file(doc.file_id)
     await bot.download_file(file.file_path, file_path)
     await state.update_data(file_path=file_path)
-    await message.answer("✏️ Введите **название** плагина:")
+    await message.answer("✏️ Введите название плагина:")
     await state.set_state(UploadPlugin.waiting_for_name)
 
 @dp.message(StateFilter(UploadPlugin.waiting_for_name), F.text)
 async def get_plugin_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("💰 Введите **цену** в рублях (например: 350):")
+    await message.answer("💰 Введите цену в рублях:")
     await state.set_state(UploadPlugin.waiting_for_price)
 
 @dp.message(StateFilter(UploadPlugin.waiting_for_price), F.text)
@@ -532,185 +480,118 @@ async def get_plugin_price(message: types.Message, state: FSMContext):
     try:
         price = int(message.text)
         await state.update_data(price=price)
-        
         cats = get_categories()
-        if not cats:
-            await message.answer("⚠️ Сначала создайте категорию в админ-панели")
-            await state.clear()
-            return
-        
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=cat_name, callback_data=f"upload_cat_{cat_id}")] for cat_id, cat_name in cats
         ])
         await message.answer("📂 Выберите категорию:", reply_markup=kb)
         await state.set_state(UploadPlugin.waiting_for_category)
-    except ValueError:
-        await message.answer("❌ Введите число (только цифры)!")
+    except:
+        await message.answer("❌ Введите число!")
 
 @dp.callback_query(StateFilter(UploadPlugin.waiting_for_category), F.data.startswith("upload_cat_"))
 async def get_plugin_category(callback: types.CallbackQuery, state: FSMContext):
     cat_id = int(callback.data.split("_")[2])
     await state.update_data(category_id=cat_id)
-    await callback.message.answer("📝 Введите **описание** плагина:")
+    await callback.message.answer("📝 Введите описание:")
     await state.set_state(UploadPlugin.waiting_for_description)
-    await callback.answer()
 
 @dp.message(StateFilter(UploadPlugin.waiting_for_description), F.text)
 async def finish_upload(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    add_plugin(
-        name=data['name'],
-        category_id=data['category_id'],
-        price=data['price'],
-        description=message.text,
-        file_path=data['file_path']
-    )
-    await message.answer(
-        f"✅ **Плагин успешно добавлен в RWPlugins!**\n\n"
-        f"📦 Название: {data['name']}\n"
-        f"💰 Цена: {data['price']} ₽\n"
-        f"📝 Описание: {message.text}"
-    )
+    add_plugin(data['name'], data['category_id'], data['price'], message.text, data['file_path'])
+    await message.answer(f"✅ Плагин {data['name']} добавлен!")
     await state.clear()
 
-# Добавление категории
 @dp.callback_query(F.data == "admin_add_category")
 async def admin_add_category_start(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет прав")
-        return
-    await callback.message.edit_text("📝 Введите название новой категории:")
-    await state.set_state("waiting_for_category_name")
-    await callback.answer()
+    await callback.message.edit_text("📝 Введите название категории:")
+    await state.set_state("waiting_for_category")
 
-@dp.message(StateFilter("waiting_for_category_name"), F.text)
+@dp.message(StateFilter("waiting_for_category"), F.text)
 async def admin_add_category(message: types.Message, state: FSMContext):
     add_category(message.text)
-    await message.answer(f"✅ Категория **{message.text}** добавлена в RWPlugins!")
+    await message.answer(f"✅ Категория {message.text} добавлена!")
     await state.clear()
 
-# Удаление категории
 @dp.callback_query(F.data == "admin_del_category")
 async def admin_del_category_menu(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет прав")
-        return
-    
     cats = get_categories()
     if not cats:
-        await callback.message.edit_text("❌ Нет категорий для удаления.", reply_markup=back_button())
+        await callback.message.edit_text("Нет категорий")
         return
-    
-    kb = []
-    for cat_id, cat_name in cats:
-        kb.append([InlineKeyboardButton(text=f"🗑 {cat_name}", callback_data=f"del_cat_{cat_id}")])
+    kb = [[InlineKeyboardButton(text=f"🗑 {cat_name}", callback_data=f"del_cat_{cat_id}")] for cat_id, cat_name in cats]
     kb.append([InlineKeyboardButton(text="◀ Назад", callback_data="admin_panel")])
-    
-    await callback.message.edit_text("🗑 Выберите категорию для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.message.edit_text("Выберите категорию:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @dp.callback_query(F.data.startswith("del_cat_"))
 async def admin_del_category(callback: types.CallbackQuery):
     cat_id = int(callback.data.split("_")[2])
     delete_category(cat_id)
     await callback.message.edit_text("✅ Категория удалена!")
-    await callback.answer()
 
-# Добавление админа
 @dp.callback_query(F.data == "admin_add_admin")
 async def admin_add_admin_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != OWNER_ID:
-        await callback.answer("⛔ Только владелец RWPlugins может добавлять администраторов!")
+        await callback.answer("Только владелец!")
         return
-    await callback.message.edit_text("📝 Введите Telegram ID пользователя:")
-    await state.set_state("waiting_for_admin_id")
-    await callback.answer()
+    await callback.message.edit_text("Введите Telegram ID:")
+    await state.set_state("waiting_for_admin")
 
-@dp.message(StateFilter("waiting_for_admin_id"), F.text)
+@dp.message(StateFilter("waiting_for_admin"), F.text)
 async def admin_add_admin(message: types.Message, state: FSMContext):
     try:
-        admin_id = int(message.text.strip())
+        admin_id = int(message.text)
         add_admin(admin_id, message.from_user.id)
-        await message.answer(f"✅ Пользователь `{admin_id}` теперь администратор RWPlugins!")
-    except ValueError:
-        await message.answer("❌ Неверный ID! Введите число.")
+        await message.answer(f"✅ Админ {admin_id} добавлен!")
+    except:
+        await message.answer("Ошибка!")
     await state.clear()
 
-# Статистика для админов
 @dp.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет прав")
-        return
-    
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM users")
-    users_count = cur.fetchone()[0]
+    users = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM plugins")
-    plugins_count = cur.fetchone()[0]
+    plugins = cur.fetchone()[0]
     cur.execute("SELECT SUM(downloads_count) FROM plugins")
-    total_downloads = cur.fetchone()[0] or 0
-    cur.execute("SELECT COUNT(*) FROM tickets WHERE status = 'open'")
-    tickets_count = cur.fetchone()[0]
+    downloads = cur.fetchone()[0] or 0
     conn.close()
-    
-    text = f"📊 **Статистика RWPlugins**\n\n"
-    text += f"👥 Пользователей: {users_count}\n"
-    text += f"📦 Плагинов: {plugins_count}\n"
-    text += f"⬇️ Всего скачиваний: {total_downloads}\n"
-    text += f"🎫 Активных тикетов: {tickets_count}"
-    
+    text = f"📊 Статистика:\n👥 Пользователей: {users}\n📦 Плагинов: {plugins}\n⬇️ Скачиваний: {downloads}"
     await callback.message.edit_text(text, reply_markup=back_button())
 
-# Тикеты для админов
 @dp.callback_query(F.data == "admin_tickets")
 async def admin_tickets(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет прав")
-        return
-    
     tickets = get_all_tickets()
     if not tickets:
-        await callback.message.edit_text("📭 Нет активных тикетов.", reply_markup=back_button())
+        await callback.message.edit_text("Нет тикетов")
         return
-    
-    text = "🎫 **Активные тикеты RWPlugins:**\n\n"
-    for user_id, question, created_at in tickets:
-        text += f"👤 ID: {user_id}\n"
-        text += f"❓ {question[:50]}...\n"
-        text += f"🕐 {created_at}\n"
-        text += "━━━━━━━━━━━━━━━\n"
-    
-    text += "\n💡 Чтобы ответить, напишите пользователю в ЛС"
+    text = "🎫 Тикеты:\n\n"
+    for user_id, question, _ in tickets:
+        text += f"👤 {user_id}: {question[:50]}...\n"
     await callback.message.edit_text(text, reply_markup=back_button())
 
-# Рейтинг плагинов
 @dp.callback_query(F.data == "admin_rating")
 async def admin_rating(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет прав")
-        return
-    
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
-    cur.execute("SELECT name, downloads_count FROM plugins ORDER BY downloads_count DESC LIMIT 10")
+    cur.execute("SELECT name, downloads_count FROM plugins ORDER BY downloads_count DESC LIMIT 5")
     plugins = cur.fetchall()
     conn.close()
-    
     if not plugins:
-        await callback.message.edit_text("📭 Нет плагинов для рейтинга.", reply_markup=back_button())
+        await callback.message.edit_text("Нет данных")
         return
-    
-    text = "🏆 **Топ-10 плагинов RWPlugins:**\n\n"
+    text = "🏆 Топ плагинов:\n\n"
     for i, (name, downloads) in enumerate(plugins, 1):
-        text += f"{i}. **{name}** — {downloads} ⬇️\n"
-    
+        text += f"{i}. {name} — {downloads} ⬇️\n"
     await callback.message.edit_text(text, reply_markup=back_button())
 
 # ---------- ЗАПУСК ----------
 async def main():
     print("🚀 ЗАПУСК RWPlugins БОТА...")
-    print(f"🤖 Токен получен: {'✅' if BOT_TOKEN else '❌'}")
+    print(f"🤖 Токен: {BOT_TOKEN[:10]}...")
     
     init_db()
     
@@ -720,10 +601,8 @@ async def main():
     add_category("Экономика")
     add_category("Боссы")
     
-    print("✅ База данных инициализирована")
-    print("✅ Категории добавлены")
+    print("✅ База данных готова")
     print("✅ Бот RWPlugins успешно запущен!")
-    print("📊 Бот готов к работе на Render.com")
     
     await dp.start_polling(bot)
 
