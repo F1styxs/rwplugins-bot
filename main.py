@@ -10,25 +10,22 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# УБИРАЕМ signal.signal - он не нужен!
-
 # Настройки
 logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-OWNER_ID = 7130414548  # ТВОЙ ID
+OWNER_ID = 7130414548
 
-# Проверка токена
 if not BOT_TOKEN:
     print("❌ Токен не найден!")
     exit(1)
 
-print(f"✅ Токен загружен: {BOT_TOKEN[:10]}...")
+print(f"✅ Токен загружен")
 
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# ---------- СОСТОЯНИЯ ----------
+# Состояния
 class UploadPlugin(StatesGroup):
     waiting_for_file = State()
     waiting_for_name = State()
@@ -39,16 +36,16 @@ class UploadPlugin(StatesGroup):
 class TicketQuestion(StatesGroup):
     waiting_for_question = State()
 
-# ---------- БД ----------
+# БД
 def init_db():
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
-    cur.execute('''CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS plugins (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, category_id INTEGER, description TEXT, price INTEGER DEFAULT 0, file_path TEXT, downloads_count INTEGER DEFAULT 0)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS tickets (user_id INTEGER PRIMARY KEY, question TEXT, status TEXT DEFAULT 'open', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY, added_by INTEGER, added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, total_downloads INTEGER DEFAULT 0)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS downloads_stats (id INTEGER PRIMARY KEY AUTOINCREMENT, plugin_id INTEGER, user_id INTEGER, downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    cur.execute('CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)')
+    cur.execute('CREATE TABLE IF NOT EXISTS plugins (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, category_id INTEGER, description TEXT, price INTEGER DEFAULT 0, file_path TEXT, downloads_count INTEGER DEFAULT 0)')
+    cur.execute('CREATE TABLE IF NOT EXISTS tickets (user_id INTEGER PRIMARY KEY, question TEXT, status TEXT DEFAULT "open", created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    cur.execute('CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY, added_by INTEGER, added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    cur.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, total_downloads INTEGER DEFAULT 0)')
+    cur.execute('CREATE TABLE IF NOT EXISTS downloads_stats (id INTEGER PRIMARY KEY AUTOINCREMENT, plugin_id INTEGER, user_id INTEGER, downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     conn.commit()
     conn.close()
     print("✅ База данных готова")
@@ -57,23 +54,6 @@ def register_user(user_id):
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
     cur.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-    conn.commit()
-    conn.close()
-
-def get_user_stats(user_id):
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute("SELECT join_date, total_downloads FROM users WHERE user_id = ?", (user_id,))
-    res = cur.fetchone()
-    conn.close()
-    if res:
-        return res
-    return (datetime.now(), 0)
-
-def update_user_downloads(user_id):
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET total_downloads = total_downloads + 1 WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
 
@@ -132,10 +112,8 @@ def increment_downloads(plugin_id, user_id):
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
     cur.execute("UPDATE plugins SET downloads_count = downloads_count + 1 WHERE id = ?", (plugin_id,))
-    cur.execute("INSERT INTO downloads_stats (plugin_id, user_id) VALUES (?, ?)", (plugin_id, user_id))
     conn.commit()
     conn.close()
-    update_user_downloads(user_id)
 
 def get_plugin_stats(plugin_id):
     conn = sqlite3.connect('shop.db')
@@ -152,13 +130,6 @@ def create_ticket(user_id, question):
     conn.commit()
     conn.close()
 
-def close_ticket(user_id):
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute("DELETE FROM tickets WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
-
 def is_ticket_open(user_id):
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
@@ -166,14 +137,6 @@ def is_ticket_open(user_id):
     res = cur.fetchone()
     conn.close()
     return res is not None
-
-def get_all_tickets():
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute("SELECT user_id, question, created_at FROM tickets WHERE status = 'open'")
-    data = cur.fetchall()
-    conn.close()
-    return data
 
 def is_admin(user_id):
     if user_id == OWNER_ID:
@@ -200,7 +163,7 @@ def get_admins():
     conn.close()
     return data
 
-# ---------- КЛАВИАТУРЫ ----------
+# Клавиатуры
 def main_menu():
     kb = [
         [InlineKeyboardButton(text="📂 Категории", callback_data="categories")],
@@ -218,34 +181,22 @@ def admin_panel_menu():
         [InlineKeyboardButton(text="➕ Добавить категорию", callback_data="admin_add_category")],
         [InlineKeyboardButton(text="🗑 Удалить категорию", callback_data="admin_del_category")],
         [InlineKeyboardButton(text="👥 Добавить админа", callback_data="admin_add_admin")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="🎫 Тикеты", callback_data="admin_tickets")],
-        [InlineKeyboardButton(text="📈 Рейтинг", callback_data="admin_rating")],
         [InlineKeyboardButton(text="◀ Назад", callback_data="main_menu")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def back_button():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀ Назад", callback_data="main_menu")]
-    ])
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀ Назад", callback_data="main_menu")]])
 
-# ---------- ОСНОВНЫЕ ОБРАБОТЧИКИ ----------
+# Обработчики
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     user_id = message.from_user.id
     register_user(user_id)
-    
     menu = main_menu()
     if is_admin(user_id):
         menu.inline_keyboard.append([InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin_panel")])
-    
-    await message.answer(
-        "🏪 **RWPlugins - Ключ к созданию большего!**\n\n"
-        "Добро пожаловать в магазин плагинов!\n"
-        "Используйте кнопки ниже для навигации:",
-        reply_markup=menu
-    )
+    await message.answer("🏪 **RWPlugins - Ключ к созданию большего!**\n\nДобро пожаловать!", reply_markup=menu)
 
 @dp.callback_query(F.data == "main_menu")
 async def back_to_main(callback: types.CallbackQuery):
@@ -253,13 +204,8 @@ async def back_to_main(callback: types.CallbackQuery):
     menu = main_menu()
     if is_admin(user_id):
         menu.inline_keyboard.append([InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin_panel")])
-    
-    await callback.message.edit_text(
-        "🏪 **Главное меню RWPlugins**\n\nВыберите действие:",
-        reply_markup=menu
-    )
+    await callback.message.edit_text("🏪 Главное меню", reply_markup=menu)
 
-# ---------- КАТЕГОРИИ ----------
 @dp.callback_query(F.data == "categories")
 async def show_categories(callback: types.CallbackQuery):
     cats = get_categories()
@@ -270,192 +216,111 @@ async def show_categories(callback: types.CallbackQuery):
     for cat_id, cat_name in cats:
         kb.append([InlineKeyboardButton(text=f"📁 {cat_name}", callback_data=f"cat_{cat_id}_1")])
     kb.append([InlineKeyboardButton(text="◀ Назад", callback_data="main_menu")])
-    await callback.message.edit_text("📂 **Категории товаров:**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.message.edit_text("📂 Категории:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @dp.callback_query(F.data.startswith("cat_"))
 async def show_plugins(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     cat_id = int(parts[1])
     page = int(parts[2]) if len(parts) > 2 else 1
-    
     plugins, total = get_plugins_by_category(cat_id, page=page, per_page=5)
     total_pages = (total + 4) // 5
-    
     if not plugins:
-        await callback.message.edit_text("❌ В этой категории пока нет плагинов.", reply_markup=back_button())
+        await callback.message.edit_text("❌ Нет плагинов.", reply_markup=back_button())
         return
-    
-    text = f"📁 **Товары в категории:**\n\n"
+    text = f"📁 Товары:\n\n"
     for pid, name, desc, price, fpath, downloads in plugins:
-        text += f"🔹 **{name}**\n"
-        text += f"   💰 Цена: {price} ₽\n"
-        text += f"   ⬇️ Скачиваний: {downloads}\n"
-        text += f"   📝 {desc}\n\n"
-    
+        text += f"🔹 {name}\n   💰 {price} ₽\n   ⬇️ {downloads}\n\n"
     kb = []
     for pid, name, desc, price, fpath, downloads in plugins:
-        kb.append([InlineKeyboardButton(text=f"📥 Купить {name} ({price}₽)", callback_data=f"buy_{pid}")])
-    
+        kb.append([InlineKeyboardButton(text=f"📥 {name} ({price}₽)", callback_data=f"buy_{pid}")])
     if total_pages > 1:
-        nav_buttons = []
+        nav = []
         if page > 1:
-            nav_buttons.append(InlineKeyboardButton(text="◀ Пред", callback_data=f"cat_{cat_id}_{page-1}"))
+            nav.append(InlineKeyboardButton(text="◀", callback_data=f"cat_{cat_id}_{page-1}"))
         if page < total_pages:
-            nav_buttons.append(InlineKeyboardButton(text="След ▶", callback_data=f"cat_{cat_id}_{page+1}"))
-        if nav_buttons:
-            kb.append(nav_buttons)
-    
+            nav.append(InlineKeyboardButton(text="▶", callback_data=f"cat_{cat_id}_{page+1}"))
+        if nav:
+            kb.append(nav)
     kb.append([InlineKeyboardButton(text="◀ Назад", callback_data="categories")])
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
-# ---------- ВСЕ ТОВАРЫ ----------
 @dp.callback_query(F.data == "products")
 async def all_products(callback: types.CallbackQuery):
-    await show_products_page(callback, page=1)
-
-async def show_products_page(callback: types.CallbackQuery, page: int):
-    plugins, total = get_all_plugins(page=page, per_page=5)
-    total_pages = (total + 4) // 5
-    
+    plugins, total = get_all_plugins(page=1, per_page=10)
     if not plugins:
         await callback.message.edit_text("📭 Товаров пока нет.", reply_markup=back_button())
         return
-    
-    text = "📦 **Все товары RWPlugins:**\n\n"
+    text = "📦 Все товары:\n\n"
     for pid, name, cat_name, price, desc, downloads in plugins:
-        text += f"🔹 **{name}**\n"
-        text += f"   📁 {cat_name}\n"
-        text += f"   💰 {price} ₽\n"
-        text += f"   ⬇️ {downloads} скачиваний\n"
-        text += f"   📝 {desc}\n\n"
-    
-    kb = []
-    for pid, name, cat_name, price, desc, downloads in plugins:
-        kb.append([InlineKeyboardButton(text=f"📥 Купить {name} ({price}₽)", callback_data=f"buy_{pid}")])
-    
-    if total_pages > 1:
-        nav_buttons = []
-        if page > 1:
-            nav_buttons.append(InlineKeyboardButton(text="◀ Пред", callback_data=f"products_page_{page-1}"))
-        if page < total_pages:
-            nav_buttons.append(InlineKeyboardButton(text="След ▶", callback_data=f"products_page_{page+1}"))
-        if nav_buttons:
-            kb.append(nav_buttons)
-    
-    kb.append([InlineKeyboardButton(text="◀ Назад", callback_data="main_menu")])
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+        text += f"🔹 {name}\n   📁 {cat_name}\n   💰 {price} ₽\n   ⬇️ {downloads}\n\n"
+    await callback.message.edit_text(text, reply_markup=back_button())
 
-@dp.callback_query(F.data.startswith("products_page_"))
-async def products_page_callback(callback: types.CallbackQuery):
-    page = int(callback.data.split("_")[2])
-    await show_products_page(callback, page)
-
-# ---------- ПОКУПКА ----------
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_plugin(callback: types.CallbackQuery):
     plugin_id = int(callback.data.split("_")[1])
     user_id = callback.from_user.id
-    
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
     cur.execute("SELECT file_path, name, price FROM plugins WHERE id = ?", (plugin_id,))
     res = cur.fetchone()
     conn.close()
-    
     if not res:
         await callback.answer("❌ Плагин не найден")
         return
-    
     file_path, name, price = res
-    
     if os.path.exists(file_path):
         increment_downloads(plugin_id, user_id)
         doc = FSInputFile(file_path)
-        await callback.message.answer_document(
-            doc, 
-            caption=f"✅ **{name}** успешно приобретён!\n"
-                    f"💰 Цена: {price} ₽\n"
-                    f"⬇️ Всего скачиваний: {get_plugin_stats(plugin_id)}"
-        )
+        await callback.message.answer_document(doc, caption=f"✅ {name} скачан!")
     else:
-        await callback.message.answer("❌ Файл временно недоступен.")
+        await callback.message.answer("❌ Файл недоступен.")
     await callback.answer()
 
-# ---------- ПРОФИЛЬ ----------
 @dp.callback_query(F.data == "profile")
 async def show_profile(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    join_date, total_downloads = get_user_stats(user_id)
-    
-    text = f"👤 **Ваш профиль RWPlugins**\n\n"
-    text += f"🆔 ID: {user_id}\n"
-    text += f"📅 Дата регистрации: {join_date.strftime('%d.%m.%Y')}\n"
-    text += f"⬇️ Всего скачиваний: {total_downloads}\n"
-    
-    await callback.message.edit_text(text, reply_markup=back_button())
+    await callback.message.edit_text("👤 Профиль\n\nВ разработке", reply_markup=back_button())
 
-# ---------- ПРАВИЛА ----------
 @dp.callback_query(F.data == "rules")
 async def show_rules(callback: types.CallbackQuery):
-    text = "📜 **Правила магазина RWPlugins**\n\n"
-    text += "1. Запрещён возврат средств после скачивания\n"
-    text += "2. Все плагины проверены\n"
-    text += "3. Техподдержка отвечает в течение 24 часов\n"
-    text += "4. Запрещено распространять плагины\n\n"
-    text += "По всем вопросам: @owner_rwplugins"
-    await callback.message.edit_text(text, reply_markup=back_button())
+    await callback.message.edit_text("📜 Правила\n\n1. Возврат средств запрещён", reply_markup=back_button())
 
-# ---------- О МАГАЗИНЕ ----------
 @dp.callback_query(F.data == "about")
 async def about_shop(callback: types.CallbackQuery):
-    text = "🏪 **RWPlugins - Ключ к созданию большего!**\n\n"
-    text += "Мы создаём качественные плагины для Minecraft.\n"
-    text += "В нашем ассортименте:\n"
-    text += "• PvP системы\n"
-    text += "• Экономика\n"
-    text += "• Босс-арены\n"
-    text += "• Кейсы и лутбоксы"
-    await callback.message.edit_text(text, reply_markup=back_button())
+    await callback.message.edit_text("🏪 RWPlugins - Магазин плагинов", reply_markup=back_button())
 
-# ---------- ПОДДЕРЖКА ----------
 @dp.callback_query(F.data == "support")
 async def support_menu(callback: types.CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✉️ Создать тикет", callback_data="create_ticket")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="main_menu")]
     ])
-    await callback.message.edit_text(
-        "🆘 **Техническая поддержка RWPlugins**\n\n"
-        "Нажмите «Создать тикет»",
-        reply_markup=kb
-    )
+    await callback.message.edit_text("🆘 Поддержка", reply_markup=kb)
 
 @dp.callback_query(F.data == "create_ticket")
 async def start_ticket(callback: types.CallbackQuery, state: FSMContext):
     if is_ticket_open(callback.from_user.id):
-        await callback.answer("❌ У вас уже есть активный тикет!")
+        await callback.answer("У вас уже есть тикет!")
         return
-    await callback.message.edit_text("📝 Напишите ваш вопрос:")
+    await callback.message.edit_text("Напишите ваш вопрос:")
     await state.set_state(TicketQuestion.waiting_for_question)
-    await callback.answer()
 
 @dp.message(StateFilter(TicketQuestion.waiting_for_question), F.text)
 async def receive_question(message: types.Message, state: FSMContext):
     create_ticket(message.from_user.id, message.text)
-    await message.answer("✅ Тикет создан! Администратор ответит.")
+    await message.answer("✅ Тикет создан!")
     await state.clear()
 
-# ---------- АДМИН-ПАНЕЛЬ ----------
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа")
         return
-    await callback.message.edit_text("⚙️ **Панель администратора**", reply_markup=admin_panel_menu())
+    await callback.message.edit_text("⚙️ Админ-панель", reply_markup=admin_panel_menu())
 
 @dp.callback_query(F.data == "admin_upload")
 async def admin_upload_start(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("📎 Отправьте файл плагина:")
+    await callback.message.edit_text("📎 Отправьте файл:")
     await state.set_state(UploadPlugin.waiting_for_file)
 
 @dp.message(StateFilter(UploadPlugin.waiting_for_file), F.document)
@@ -466,13 +331,13 @@ async def get_plugin_file(message: types.Message, state: FSMContext):
     file = await bot.get_file(doc.file_id)
     await bot.download_file(file.file_path, file_path)
     await state.update_data(file_path=file_path)
-    await message.answer("✏️ Введите название плагина:")
+    await message.answer("Введите название:")
     await state.set_state(UploadPlugin.waiting_for_name)
 
 @dp.message(StateFilter(UploadPlugin.waiting_for_name), F.text)
 async def get_plugin_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("💰 Введите цену в рублях:")
+    await message.answer("Введите цену:")
     await state.set_state(UploadPlugin.waiting_for_price)
 
 @dp.message(StateFilter(UploadPlugin.waiting_for_price), F.text)
@@ -481,19 +346,23 @@ async def get_plugin_price(message: types.Message, state: FSMContext):
         price = int(message.text)
         await state.update_data(price=price)
         cats = get_categories()
+        if not cats:
+            await message.answer("Сначала создайте категорию!")
+            await state.clear()
+            return
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=cat_name, callback_data=f"upload_cat_{cat_id}")] for cat_id, cat_name in cats
         ])
-        await message.answer("📂 Выберите категорию:", reply_markup=kb)
+        await message.answer("Выберите категорию:", reply_markup=kb)
         await state.set_state(UploadPlugin.waiting_for_category)
     except:
-        await message.answer("❌ Введите число!")
+        await message.answer("Введите число!")
 
 @dp.callback_query(StateFilter(UploadPlugin.waiting_for_category), F.data.startswith("upload_cat_"))
 async def get_plugin_category(callback: types.CallbackQuery, state: FSMContext):
     cat_id = int(callback.data.split("_")[2])
     await state.update_data(category_id=cat_id)
-    await callback.message.answer("📝 Введите описание:")
+    await callback.message.answer("Введите описание:")
     await state.set_state(UploadPlugin.waiting_for_description)
 
 @dp.message(StateFilter(UploadPlugin.waiting_for_description), F.text)
@@ -505,7 +374,7 @@ async def finish_upload(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "admin_add_category")
 async def admin_add_category_start(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("📝 Введите название категории:")
+    await callback.message.edit_text("Введите название категории:")
     await state.set_state("waiting_for_category")
 
 @dp.message(StateFilter("waiting_for_category"), F.text)
@@ -548,62 +417,14 @@ async def admin_add_admin(message: types.Message, state: FSMContext):
         await message.answer("Ошибка!")
     await state.clear()
 
-@dp.callback_query(F.data == "admin_stats")
-async def admin_stats(callback: types.CallbackQuery):
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM users")
-    users = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM plugins")
-    plugins = cur.fetchone()[0]
-    cur.execute("SELECT SUM(downloads_count) FROM plugins")
-    downloads = cur.fetchone()[0] or 0
-    conn.close()
-    text = f"📊 Статистика:\n👥 Пользователей: {users}\n📦 Плагинов: {plugins}\n⬇️ Скачиваний: {downloads}"
-    await callback.message.edit_text(text, reply_markup=back_button())
-
-@dp.callback_query(F.data == "admin_tickets")
-async def admin_tickets(callback: types.CallbackQuery):
-    tickets = get_all_tickets()
-    if not tickets:
-        await callback.message.edit_text("Нет тикетов")
-        return
-    text = "🎫 Тикеты:\n\n"
-    for user_id, question, _ in tickets:
-        text += f"👤 {user_id}: {question[:50]}...\n"
-    await callback.message.edit_text(text, reply_markup=back_button())
-
-@dp.callback_query(F.data == "admin_rating")
-async def admin_rating(callback: types.CallbackQuery):
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute("SELECT name, downloads_count FROM plugins ORDER BY downloads_count DESC LIMIT 5")
-    plugins = cur.fetchall()
-    conn.close()
-    if not plugins:
-        await callback.message.edit_text("Нет данных")
-        return
-    text = "🏆 Топ плагинов:\n\n"
-    for i, (name, downloads) in enumerate(plugins, 1):
-        text += f"{i}. {name} — {downloads} ⬇️\n"
-    await callback.message.edit_text(text, reply_markup=back_button())
-
-# ---------- ЗАПУСК ----------
+# Запуск
 async def main():
     print("🚀 ЗАПУСК RWPlugins БОТА...")
-    print(f"🤖 Токен: {BOT_TOKEN[:10]}...")
-    
     init_db()
-    
-    # Добавляем начальные категории
     add_category("Сборки")
     add_category("PvP")
     add_category("Экономика")
-    add_category("Боссы")
-    
-    print("✅ База данных готова")
-    print("✅ Бот RWPlugins успешно запущен!")
-    
+    print("✅ Бот запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
