@@ -94,30 +94,19 @@ def add_plugin(name, category_id, price, description, file_path):
     conn.commit()
     conn.close()
 
-def get_plugins_by_category(category_id, page=1, per_page=5):
+def get_plugins_by_category(category_id):
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
-    offset = (page - 1) * per_page
-    cur.execute('SELECT id, name, description, price, file_path, downloads_count, rating_sum, rating_count FROM plugins WHERE category_id = ? LIMIT ? OFFSET ?', (category_id, per_page, offset))
+    cur.execute('SELECT id, name, description, price, file_path, downloads_count, rating_sum, rating_count FROM plugins WHERE category_id = ?', (category_id,))
     data = cur.fetchall()
-    cur.execute("SELECT COUNT(*) FROM plugins WHERE category_id = ?", (category_id,))
-    total = cur.fetchone()[0]
     conn.close()
-    return data, total
+    return data
 
 def get_all_plugins():
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
     cur.execute('SELECT id, name, category_id, price, description, downloads_count, rating_sum, rating_count FROM plugins')
     data = cur.fetchall()
-    conn.close()
-    return data
-
-def get_plugin_by_id(plugin_id):
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute('SELECT id, name, category_id, price, description, file_path, downloads_count, rating_sum, rating_count FROM plugins WHERE id = ?', (plugin_id,))
-    data = cur.fetchone()
     conn.close()
     return data
 
@@ -131,7 +120,6 @@ def increment_downloads(plugin_id, user_id):
 def add_rating(plugin_id, user_id, rating):
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
-    # Проверяем, не оценивал ли уже
     cur.execute("SELECT id FROM ratings WHERE plugin_id = ? AND user_id = ?", (plugin_id, user_id))
     if cur.fetchone():
         conn.close()
@@ -234,51 +222,83 @@ def get_total_users():
 
 # ---------- КЛАВИАТУРЫ (Reply Keyboard - внизу экрана) ----------
 def get_main_keyboard():
+    """Клавиатура для обычного пользователя"""
     kb = [
-        [KeyboardButton(text="📂 Категории")],
-        [KeyboardButton(text="📋 Список товаров")],
-        [KeyboardButton(text="ℹ️ О магазине"), KeyboardButton(text="👤 Профиль")],
+        [KeyboardButton(text="📂 Категории"), KeyboardButton(text="📋 Список товаров")],
+        [KeyboardButton(text="ℹ️ О магазине"), KeyboardButton(text="👤 Мой профиль")],
         [KeyboardButton(text="📜 Правила"), KeyboardButton(text="🆘 Поддержка")],
         [KeyboardButton(text="⭐ Оценить плагин")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 def get_admin_keyboard():
+    """Клавиатура для админа/владельца"""
+    kb = [
+        [KeyboardButton(text="📂 Категории"), KeyboardButton(text="📋 Список товаров")],
+        [KeyboardButton(text="ℹ️ О магазине"), KeyboardButton(text="👤 Мой профиль")],
+        [KeyboardButton(text="📜 Правила"), KeyboardButton(text="🆘 Поддержка")],
+        [KeyboardButton(text="⭐ Оценить плагин"), KeyboardButton(text="⚙️ Админ-панель")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+def get_admin_panel_keyboard():
+    """Клавиатура админ-панели"""
     kb = [
         [KeyboardButton(text="📥 Загрузить плагин")],
         [KeyboardButton(text="➕ Добавить категорию"), KeyboardButton(text="🗑 Удалить категорию")],
         [KeyboardButton(text="👥 Управление админами"), KeyboardButton(text="👑 Управление владельцами")],
         [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="🎫 Тикеты")],
-        [KeyboardButton(text="📈 Рейтинг"), KeyboardButton(text="◀ Назад в меню")]
+        [KeyboardButton(text="📈 Рейтинг плагинов"), KeyboardButton(text="◀ Назад в меню")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 def back_keyboard():
+    """Клавиатура с кнопкой назад"""
     kb = [[KeyboardButton(text="◀ Назад в меню")]]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-def rating_keyboard(plugin_id):
+def rating_keyboard(plugin_name):
     kb = [
-        [KeyboardButton(text=f"⭐ 1"), KeyboardButton(text=f"⭐ 2"), KeyboardButton(text=f"⭐ 3")],
-        [KeyboardButton(text=f"⭐ 4"), KeyboardButton(text=f"⭐ 5"), KeyboardButton(text="◀ Назад в меню")]
+        [KeyboardButton(text="⭐ 1"), KeyboardButton(text="⭐ 2"), KeyboardButton(text="⭐ 3")],
+        [KeyboardButton(text="⭐ 4"), KeyboardButton(text="⭐ 5"), KeyboardButton(text="◀ Назад в меню")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 # ---------- ОБРАБОТЧИКИ ----------
 @dp.message(Command("start"))
-@dp.message(F.text == "◀ Назад в меню")
 async def start_cmd(message: types.Message):
     user_id = message.from_user.id
     register_user(user_id)
     
     if is_admin(user_id):
-        await message.answer("⚙️ **Админ-панель RWPlugins**", reply_markup=get_admin_keyboard())
+        await message.answer(
+            "🏪 **RWPlugins - Ключ к созданию большего!**\n\n"
+            f"👑 Ваша роль: {'Владелец' if user_id in OWNERS else 'Администратор'}\n\n"
+            "Добро пожаловать в админ-панель!",
+            reply_markup=get_admin_keyboard()
+        )
     else:
         await message.answer(
             "🏪 **RWPlugins - Ключ к созданию большего!**\n\n"
-            "Добро пожаловать в магазин плагинов!",
+            "Добро пожаловать в магазин плагинов!\n\n"
+            "📌 Используйте кнопки ниже для навигации:",
             reply_markup=get_main_keyboard()
         )
+
+@dp.message(F.text == "◀ Назад в меню")
+async def back_to_menu(message: types.Message):
+    user_id = message.from_user.id
+    if is_admin(user_id):
+        await message.answer("⚙️ **Главное меню**", reply_markup=get_admin_keyboard())
+    else:
+        await message.answer("🏪 **Главное меню**", reply_markup=get_main_keyboard())
+
+@dp.message(F.text == "⚙️ Админ-панель")
+async def open_admin_panel(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ У вас нет доступа к админ-панели!", reply_markup=get_main_keyboard())
+        return
+    await message.answer("⚙️ **Панель администратора**\n\nВыберите действие:", reply_markup=get_admin_panel_keyboard())
 
 # ---------- КАТЕГОРИИ ----------
 @dp.message(F.text == "📂 Категории")
@@ -310,8 +330,7 @@ async def show_plugins_in_category(message: types.Message):
         return
     cat_id = cat[0]
     
-    cur.execute("SELECT id, name, price, downloads_count, rating_sum, rating_count FROM plugins WHERE category_id = ?", (cat_id,))
-    plugins = cur.fetchall()
+    plugins = get_plugins_by_category(cat_id)
     conn.close()
     
     if not plugins:
@@ -320,11 +339,11 @@ async def show_plugins_in_category(message: types.Message):
     
     text = f"📁 **{cat_name}**\n\n"
     kb = []
-    for pid, name, price, downloads, rating_sum, rating_count in plugins:
-        rating = round(rating_sum / rating_count, 1) if rating_count > 0 else 0
+    for pid, name, desc, price, fpath, downloads, rating_sum, rating_count in plugins:
+        rating, count = get_plugin_rating(pid)
         stars = "⭐" * int(rating) if rating > 0 else "Нет оценок"
         text += f"🔹 **{name}**\n   💰 {price} ₽\n   ⬇️ {downloads}\n   🌟 {rating} {stars}\n\n"
-        kb.append([KeyboardButton(text=f"📥 Купить {name} ({price}₽)")])
+        kb.append([KeyboardButton(text=f"📥 Купить {name}")])
     
     kb.append([KeyboardButton(text="◀ Назад в меню")])
     await message.answer(text, reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
@@ -340,10 +359,10 @@ async def all_products(message: types.Message):
     text = "📦 **Все товары RWPlugins:**\n\n"
     kb = []
     for pid, name, cat_id, price, desc, downloads, rating_sum, rating_count in plugins:
-        rating = round(rating_sum / rating_count, 1) if rating_count > 0 else 0
+        rating, count = get_plugin_rating(pid)
         stars = "⭐" * int(rating) if rating > 0 else "Нет оценок"
         text += f"🔹 **{name}**\n   💰 {price} ₽\n   ⬇️ {downloads}\n   🌟 {rating} {stars}\n   📝 {desc}\n\n"
-        kb.append([KeyboardButton(text=f"📥 Купить {name} ({price}₽)")])
+        kb.append([KeyboardButton(text=f"📥 Купить {name}")])
     
     kb.append([KeyboardButton(text="◀ Назад в меню")])
     await message.answer(text, reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
@@ -351,7 +370,7 @@ async def all_products(message: types.Message):
 # ---------- ПОКУПКА ----------
 @dp.message(F.text.startswith("📥 Купить "))
 async def buy_plugin(message: types.Message):
-    plugin_name = message.text.replace("📥 Купить ", "").split(" (")[0]
+    plugin_name = message.text.replace("📥 Купить ", "")
     
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
@@ -393,12 +412,20 @@ async def start_rating(message: types.Message, state: FSMContext):
     
     plugin_id = res[0]
     await state.update_data(plugin_id=plugin_id, plugin_name=plugin_name)
-    await message.answer(f"⭐ Оцените плагин **{plugin_name}** от 1 до 5:", reply_markup=rating_keyboard(plugin_id))
+    await message.answer(f"⭐ Оцените плагин **{plugin_name}** от 1 до 5:", reply_markup=rating_keyboard(plugin_name))
     await state.set_state(RatingStates.waiting_for_rating)
 
 @dp.message(RatingStates.waiting_for_rating, F.text.startswith("⭐ "))
 async def process_rating(message: types.Message, state: FSMContext):
-    rating = int(message.text.replace("⭐ ", ""))
+    try:
+        rating = int(message.text.replace("⭐ ", ""))
+        if rating < 1 or rating > 5:
+            await message.answer("❌ Оценка должна быть от 1 до 5!")
+            return
+    except:
+        await message.answer("❌ Пожалуйста, выберите оценку из кнопок!")
+        return
+    
     data = await state.get_data()
     plugin_id = data.get("plugin_id")
     plugin_name = data.get("plugin_name")
@@ -406,9 +433,13 @@ async def process_rating(message: types.Message, state: FSMContext):
     
     if add_rating(plugin_id, user_id, rating):
         rating_val, count = get_plugin_rating(plugin_id)
-        await message.answer(f"✅ Спасибо за оценку! 🌟 Средний рейтинг: {rating_val} ⭐ ({count} оценок)", reply_markup=get_main_keyboard())
+        user_role = is_admin(user_id)
+        await message.answer(f"✅ Спасибо за оценку! 🌟 Средний рейтинг: {rating_val} ⭐ ({count} оценок)", 
+                           reply_markup=get_admin_keyboard() if user_role else get_main_keyboard())
     else:
-        await message.answer("❌ Вы уже оценивали этот плагин!", reply_markup=get_main_keyboard())
+        user_role = is_admin(user_id)
+        await message.answer("❌ Вы уже оценивали этот плагин!", 
+                           reply_markup=get_admin_keyboard() if user_role else get_main_keyboard())
     
     await state.clear()
 
@@ -426,23 +457,26 @@ async def rate_plugin_menu(message: types.Message):
     
     await message.answer("⭐ Выберите плагин для оценки:", reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
-# ---------- ОСТАЛЬНЫЕ КНОПКИ ----------
+# ---------- ИНФОРМАЦИОННЫЕ КНОПКИ ----------
 @dp.message(F.text == "ℹ️ О магазине")
 async def about_shop(message: types.Message):
     text = "🏪 **RWPlugins - Ключ к созданию большего!**\n\n"
     text += "Мы создаём качественные плагины для Minecraft.\n"
     text += f"📅 Магазин работает с {SHOP_CREATION_DATE}\n\n"
     text += "В нашем ассортименте:\n"
-    text += "• PvP системы\n• Экономика\n• Босс-арены\n• Кейсы и лутбоксы"
+    text += "• PvP системы\n• Экономика\n• Босс-арены\n• Кейсы и лутбоксы\n\n"
+    text += "💬 По вопросам: @owner_rwplugins"
     await message.answer(text, reply_markup=back_keyboard())
 
-@dp.message(F.text == "👤 Профиль")
+@dp.message(F.text == "👤 Мой профиль")
 async def profile(message: types.Message):
     user_id = message.from_user.id
-    text = f"👤 **Ваш профиль RWPlugins**\n\n"
+    user_role = "Владелец" if user_id in OWNERS else "Администратор" if is_admin(user_id) else "Покупатель"
+    
+    text = f"👤 **Мой профиль RWPlugins**\n\n"
     text += f"🆔 ID: {user_id}\n"
     text += f"📅 Дата регистрации: {datetime.now().strftime('%d.%m.%Y')}\n"
-    text += f"👑 Статус: {'Владелец' if user_id in OWNERS else 'Администратор' if is_admin(user_id) else 'Покупатель'}"
+    text += f"👑 Роль: {user_role}"
     await message.answer(text, reply_markup=back_keyboard())
 
 @dp.message(F.text == "📜 Правила")
@@ -455,7 +489,7 @@ async def rules(message: types.Message):
     text += f"📅 Магазин работает с {SHOP_CREATION_DATE}"
     await message.answer(text, reply_markup=back_keyboard())
 
-# ---------- ТИКЕТЫ (ВНУТРИ БОТА, БЕЗ ЛС) ----------
+# ---------- ПОДДЕРЖКА (ТИКЕТЫ) ----------
 @dp.message(F.text == "🆘 Поддержка")
 async def support_start(message: types.Message, state: FSMContext):
     existing_ticket = get_user_ticket(message.from_user.id)
@@ -473,14 +507,19 @@ async def create_ticket_handler(message: types.Message, state: FSMContext):
     await message.answer(f"✅ **Тикет #{ticket_id} создан!**\n\nАдминистратор ответит вам здесь. Ожидайте.")
     await state.clear()
     
-    # Уведомляем админов
+    # Уведомляем админов и владельцев
     for admin_id in OWNERS:
         try:
-            await bot.send_message(admin_id, f"🆕 **Новый тикет #{ticket_id}**\nОт: {message.from_user.id}\nВопрос: {message.text[:100]}...")
+            await bot.send_message(admin_id, f"🆕 **Новый тикет #{ticket_id}**\n👤 От: {message.from_user.id}\n📝 Вопрос: {message.text[:100]}...")
+        except:
+            pass
+    for admin_id, _, _ in get_admins():
+        try:
+            await bot.send_message(admin_id, f"🆕 **Новый тикет #{ticket_id}**\n👤 От: {message.from_user.id}\n📝 Вопрос: {message.text[:100]}...")
         except:
             pass
 
-# ---------- АДМИН: ПРОСМОТР ТИКЕТОВ ----------
+# ---------- АДМИН: ТИКЕТЫ ----------
 @dp.message(F.text == "🎫 Тикеты")
 async def admin_view_tickets(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -489,7 +528,7 @@ async def admin_view_tickets(message: types.Message, state: FSMContext):
     
     tickets = get_all_open_tickets()
     if not tickets:
-        await message.answer("📭 Нет активных тикетов.", reply_markup=get_admin_keyboard())
+        await message.answer("📭 Нет активных тикетов.", reply_markup=get_admin_panel_keyboard())
         return
     
     text = "🎫 **Активные тикеты:**\n\n"
@@ -513,7 +552,7 @@ async def admin_reply_to_ticket(message: types.Message, state: FSMContext):
         return
     
     await state.update_data(ticket_id=ticket_id, user_id=ticket[1])
-    await message.answer(f"📝 Введите ответ для пользователя (тикет #{ticket_id}):\n\nВопрос: {ticket[2]}")
+    await message.answer(f"📝 Введите ответ для пользователя (тикет #{ticket_id}):\n\n📩 Вопрос: {ticket[2]}")
     await state.set_state(TicketStates.admin_waiting_for_reply)
 
 @dp.message(TicketStates.admin_waiting_for_reply, F.text)
@@ -523,10 +562,8 @@ async def admin_send_reply(message: types.Message, state: FSMContext):
     user_id = data.get("user_id")
     answer = message.text
     
-    # Сохраняем ответ в БД
     answer_ticket(ticket_id, answer)
     
-    # Отправляем ответ пользователю
     try:
         await bot.send_message(
             user_id,
@@ -537,15 +574,15 @@ async def admin_send_reply(message: types.Message, state: FSMContext):
         await message.answer(f"❌ Не удалось отправить: {e}")
     
     await state.clear()
-    await message.answer("⚙️ Админ-панель", reply_markup=get_admin_keyboard())
+    await message.answer("⚙️ Админ-панель", reply_markup=get_admin_panel_keyboard())
 
-# ---------- АДМИН-КНОПКИ ----------
+# ---------- АДМИН: ЗАГРУЗКА ПЛАГИНА ----------
 @dp.message(F.text == "📥 Загрузить плагин")
 async def admin_upload_start(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Нет доступа")
         return
-    await message.answer("📎 Отправьте файл плагина:")
+    await message.answer("📎 Отправьте файл плагина (zip, py, jar):")
     await state.set_state(UploadPlugin.waiting_for_file)
 
 @dp.message(StateFilter(UploadPlugin.waiting_for_file), F.document)
@@ -562,7 +599,7 @@ async def get_plugin_file(message: types.Message, state: FSMContext):
 @dp.message(StateFilter(UploadPlugin.waiting_for_name), F.text)
 async def get_plugin_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("💰 Введите **цену** в рублях:")
+    await message.answer("💰 Введите **цену** в рублях (например: 350):")
     await state.set_state(UploadPlugin.waiting_for_price)
 
 @dp.message(StateFilter(UploadPlugin.waiting_for_price), F.text)
@@ -572,7 +609,7 @@ async def get_plugin_price(message: types.Message, state: FSMContext):
         await state.update_data(price=price)
         cats = get_categories()
         if not cats:
-            await message.answer("⚠️ Сначала создайте категорию!")
+            await message.answer("⚠️ Сначала создайте категорию в админ-панели!")
             await state.clear()
             return
         kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=cat_name)] for _, cat_name in cats], resize_keyboard=True)
@@ -591,7 +628,7 @@ async def get_plugin_category(message: types.Message, state: FSMContext):
     conn.close()
     
     if not cat:
-        await message.answer("❌ Категория не найдена!")
+        await message.answer("❌ Категория не найдена! Используйте кнопки.")
         return
     
     await state.update_data(category_id=cat[0])
@@ -602,9 +639,10 @@ async def get_plugin_category(message: types.Message, state: FSMContext):
 async def finish_upload(message: types.Message, state: FSMContext):
     data = await state.get_data()
     add_plugin(data['name'], data['category_id'], data['price'], message.text, data['file_path'])
-    await message.answer(f"✅ **Плагин {data['name']} добавлен!**", reply_markup=get_admin_keyboard())
+    await message.answer(f"✅ **Плагин {data['name']} добавлен!**", reply_markup=get_admin_panel_keyboard())
     await state.clear()
 
+# ---------- АДМИН: КАТЕГОРИИ ----------
 @dp.message(F.text == "➕ Добавить категорию")
 async def admin_add_category_start(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -616,7 +654,7 @@ async def admin_add_category_start(message: types.Message, state: FSMContext):
 @dp.message(StateFilter("waiting_for_category"), F.text)
 async def admin_add_category(message: types.Message, state: FSMContext):
     add_category(message.text)
-    await message.answer(f"✅ Категория **{message.text}** добавлена!", reply_markup=get_admin_keyboard())
+    await message.answer(f"✅ Категория **{message.text}** добавлена!", reply_markup=get_admin_panel_keyboard())
     await state.clear()
 
 @dp.message(F.text == "🗑 Удалить категорию")
@@ -632,20 +670,22 @@ async def admin_del_category_menu(message: types.Message):
     kb.append([KeyboardButton(text="◀ Назад в меню")])
     await message.answer("🗑 Выберите категорию для удаления:", reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
-@dp.message(F.text.startswith("🗑 "))
+@dp.message(F.text.startswith("🗑 ") and F.text != "🗑 Удалить категорию" and not F.text.startswith("🗑 Удалить админа"))
 async def confirm_delete_category(message: types.Message):
     cat_name = message.text.replace("🗑 ", "")
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
     cur.execute("SELECT id FROM categories WHERE name = ?", (cat_name,))
     cat_id = cur.fetchone()
+    conn.close()
     if cat_id:
         delete_category(cat_id[0])
         await message.answer(f"✅ Категория '{cat_name}' удалена!")
     else:
         await message.answer("❌ Категория не найдена")
-    await message.answer("⚙️ Админ-панель", reply_markup=get_admin_keyboard())
+    await message.answer("⚙️ Админ-панель", reply_markup=get_admin_panel_keyboard())
 
+# ---------- АДМИН: УПРАВЛЕНИЕ АДМИНАМИ ----------
 @dp.message(F.text == "👥 Управление админами")
 async def admin_manage_admins(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -672,11 +712,15 @@ async def add_admin_start(message: types.Message, state: FSMContext):
 async def add_admin_process(message: types.Message, state: FSMContext):
     try:
         admin_id = int(message.text)
-        add_admin(admin_id, message.from_user.id)
-        await message.answer(f"✅ Пользователь `{admin_id}` теперь администратор!", reply_markup=get_admin_keyboard())
+        if admin_id in OWNERS:
+            await message.answer("❌ Этот пользователь уже владелец!")
+        else:
+            add_admin(admin_id, message.from_user.id)
+            await message.answer(f"✅ Пользователь `{admin_id}` теперь администратор!")
     except:
-        await message.answer("❌ Неверный ID!")
+        await message.answer("❌ Неверный ID! Введите число.")
     await state.clear()
+    await message.answer("⚙️ Админ-панель", reply_markup=get_admin_panel_keyboard())
 
 @dp.message(F.text == "🗑 Удалить админа")
 async def remove_admin_menu(message: types.Message):
@@ -687,14 +731,14 @@ async def remove_admin_menu(message: types.Message):
     if not admins:
         await message.answer("❌ Нет администраторов для удаления.")
         return
-    kb = [[KeyboardButton(text=f"🗑 {admin_id}")] for admin_id, _, _ in admins]
+    kb = [[KeyboardButton(text=f"🗑 Удалить админа {admin_id}")] for admin_id, _, _ in admins]
     kb.append([KeyboardButton(text="◀ Назад в меню")])
     await message.answer("🗑 Выберите администратора для удаления:", reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
-@dp.message(F.text.startswith("🗑 ") and F.text != "🗑 Удалить категорию")
+@dp.message(F.text.startswith("🗑 Удалить админа "))
 async def remove_admin_process(message: types.Message):
     try:
-        admin_id = int(message.text.replace("🗑 ", ""))
+        admin_id = int(message.text.replace("🗑 Удалить админа ", ""))
         if admin_id in OWNERS:
             await message.answer("❌ Нельзя удалить владельца через удаление админа!")
             return
@@ -702,7 +746,7 @@ async def remove_admin_process(message: types.Message):
         await message.answer(f"✅ Администратор {admin_id} удалён!")
     except:
         await message.answer("❌ Ошибка!")
-    await message.answer("⚙️ Админ-панель", reply_markup=get_admin_keyboard())
+    await message.answer("⚙️ Админ-панель", reply_markup=get_admin_panel_keyboard())
 
 @dp.message(F.text == "📋 Список админов")
 async def list_admins(message: types.Message):
@@ -716,8 +760,9 @@ async def list_admins(message: types.Message):
             text += f"• `{admin_id}` (добавлен {added_at[:10]})\n"
     else:
         text += "Нет администраторов\n"
-    await message.answer(text, reply_markup=get_admin_keyboard())
+    await message.answer(text, reply_markup=get_admin_panel_keyboard())
 
+# ---------- АДМИН: УПРАВЛЕНИЕ ВЛАДЕЛЬЦАМИ ----------
 @dp.message(F.text == "👑 Управление владельцами")
 async def owner_manage(message: types.Message):
     if message.from_user.id not in OWNERS:
@@ -745,25 +790,22 @@ async def add_owner_process(message: types.Message, state: FSMContext):
         owner_id = int(message.text)
         if owner_id not in OWNERS:
             OWNERS.append(owner_id)
-            conn = sqlite3.connect('shop.db')
-            cur = conn.cursor()
-            cur.execute("INSERT OR IGNORE INTO owners (user_id, added_by) VALUES (?, ?)", (owner_id, message.from_user.id))
-            conn.commit()
-            conn.close()
-            await message.answer(f"✅ Пользователь `{owner_id}` теперь владелец!", reply_markup=get_admin_keyboard())
+            await message.answer(f"✅ Пользователь `{owner_id}` теперь владелец!")
         else:
             await message.answer("❌ Пользователь уже владелец!")
     except:
         await message.answer("❌ Неверный ID!")
     await state.clear()
+    await message.answer("⚙️ Админ-панель", reply_markup=get_admin_panel_keyboard())
 
 @dp.message(F.text == "📋 Список владельцев")
 async def list_owners(message: types.Message):
     text = "👑 **Список владельцев:**\n\n"
     for owner_id in OWNERS:
         text += f"• `{owner_id}`\n"
-    await message.answer(text, reply_markup=get_admin_keyboard())
+    await message.answer(text, reply_markup=get_admin_panel_keyboard())
 
+# ---------- АДМИН: СТАТИСТИКА И РЕЙТИНГ ----------
 @dp.message(F.text == "📊 Статистика")
 async def admin_stats(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -786,9 +828,9 @@ async def admin_stats(message: types.Message):
     text += f"👥 Администраторов: {len(get_admins())}\n"
     text += f"📅 Магазин работает с {SHOP_CREATION_DATE}"
     
-    await message.answer(text, reply_markup=get_admin_keyboard())
+    await message.answer(text, reply_markup=get_admin_panel_keyboard())
 
-@dp.message(F.text == "📈 Рейтинг")
+@dp.message(F.text == "📈 Рейтинг плагинов")
 async def admin_rating(message: types.Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Нет доступа")
@@ -799,11 +841,10 @@ async def admin_rating(message: types.Message):
         await message.answer("📭 Нет плагинов для рейтинга.")
         return
     
-    # Сортируем по рейтингу
     plugins_with_rating = []
     for pid, name, cat_id, price, desc, downloads, rating_sum, rating_count in plugins:
-        rating = round(rating_sum / rating_count, 1) if rating_count > 0 else 0
-        plugins_with_rating.append((name, rating, downloads, rating_count))
+        rating, count = get_plugin_rating(pid)
+        plugins_with_rating.append((name, rating, downloads, count))
     
     plugins_with_rating.sort(key=lambda x: x[1], reverse=True)
     
@@ -812,7 +853,7 @@ async def admin_rating(message: types.Message):
         stars = "⭐" * int(rating)
         text += f"{i}. **{name}**\n   🌟 {rating} {stars}\n   ⬇️ {downloads} скачиваний\n   📊 {count} оценок\n\n"
     
-    await message.answer(text, reply_markup=get_admin_keyboard())
+    await message.answer(text, reply_markup=get_admin_panel_keyboard())
 
 # ---------- ЗАПУСК ----------
 async def main():
