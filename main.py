@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, StateFilter
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, BotCommand, BotCommandScopeDefault
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -14,10 +14,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-# ВЛАДЕЛЬЦЫ - сюда добавляй ID тех, кто имеет полные права
-OWNERS = [7130414548]  # Твой ID, можешь добавить ещё через запятую: [7130414548, 123456789, 987654321]
+# ВЛАДЕЛЬЦЫ - добавляй ID через запятую
+OWNERS = [7130414548]
 
-# Дата создания магазина (измени на свою)
+# Дата создания магазина
 SHOP_CREATION_DATE = "15.04.2025"
 
 if not BOT_TOKEN:
@@ -36,20 +36,24 @@ class UploadPlugin(StatesGroup):
     waiting_for_category = State()
     waiting_for_description = State()
 
-class TicketQuestion(StatesGroup):
+class TicketStates(StatesGroup):
     waiting_for_question = State()
+    admin_waiting_for_reply = State()
+    admin_waiting_for_ticket_selection = State()
+
+class RatingStates(StatesGroup):
+    waiting_for_rating = State()
 
 # ---------- БД ----------
 def init_db():
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
     cur.execute('CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)')
-    cur.execute('CREATE TABLE IF NOT EXISTS plugins (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, category_id INTEGER, description TEXT, price INTEGER DEFAULT 0, file_path TEXT, downloads_count INTEGER DEFAULT 0)')
-    cur.execute('CREATE TABLE IF NOT EXISTS tickets (user_id INTEGER PRIMARY KEY, question TEXT, status TEXT DEFAULT "open", created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    cur.execute('CREATE TABLE IF NOT EXISTS plugins (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, category_id INTEGER, description TEXT, price INTEGER DEFAULT 0, file_path TEXT, downloads_count INTEGER DEFAULT 0, rating_sum INTEGER DEFAULT 0, rating_count INTEGER DEFAULT 0)')
+    cur.execute('CREATE TABLE IF NOT EXISTS tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, question TEXT, answer TEXT, status TEXT DEFAULT "open", created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     cur.execute('CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY, added_by INTEGER, added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
-    cur.execute('CREATE TABLE IF NOT EXISTS owners (user_id INTEGER PRIMARY KEY, added_by INTEGER, added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     cur.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, total_downloads INTEGER DEFAULT 0)')
-    cur.execute('CREATE TABLE IF NOT EXISTS downloads_stats (id INTEGER PRIMARY KEY AUTOINCREMENT, plugin_id INTEGER, user_id INTEGER, downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    cur.execute('CREATE TABLE IF NOT EXISTS ratings (id INTEGER PRIMARY KEY AUTOINCREMENT, plugin_id INTEGER, user_id INTEGER, rating INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     conn.commit()
     conn.close()
     print("✅ База данных готова")
@@ -86,7 +90,7 @@ def delete_category(category_id):
 def add_plugin(name, category_id, price, description, file_path):
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
-    cur.execute('INSERT INTO plugins (name, category_id, price, description, file_path, downloads_count) VALUES (?, ?, ?, ?, ?, 0)', (name, category_id, price, description, file_path))
+    cur.execute('INSERT INTO plugins (name, category_id, price, description, file_path, downloads_count, rating_sum, rating_count) VALUES (?, ?, ?, ?, ?, 0, 0, 0)', (name, category_id, price, description, file_path))
     conn.commit()
     conn.close()
 
@@ -94,23 +98,28 @@ def get_plugins_by_category(category_id, page=1, per_page=5):
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
     offset = (page - 1) * per_page
-    cur.execute('SELECT id, name, description, price, file_path, downloads_count FROM plugins WHERE category_id = ? LIMIT ? OFFSET ?', (category_id, per_page, offset))
+    cur.execute('SELECT id, name, description, price, file_path, downloads_count, rating_sum, rating_count FROM plugins WHERE category_id = ? LIMIT ? OFFSET ?', (category_id, per_page, offset))
     data = cur.fetchall()
     cur.execute("SELECT COUNT(*) FROM plugins WHERE category_id = ?", (category_id,))
     total = cur.fetchone()[0]
     conn.close()
     return data, total
 
-def get_all_plugins(page=1, per_page=5):
+def get_all_plugins():
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
-    offset = (page - 1) * per_page
-    cur.execute('SELECT p.id, p.name, c.name, p.price, p.description, p.downloads_count FROM plugins p JOIN categories c ON p.category_id = c.id LIMIT ? OFFSET ?', (per_page, offset))
+    cur.execute('SELECT id, name, category_id, price, description, downloads_count, rating_sum, rating_count FROM plugins')
     data = cur.fetchall()
-    cur.execute("SELECT COUNT(*) FROM plugins")
-    total = cur.fetchone()[0]
     conn.close()
-    return data, total
+    return data
+
+def get_plugin_by_id(plugin_id):
+    conn = sqlite3.connect('shop.db')
+    cur = conn.cursor()
+    cur.execute('SELECT id, name, category_id, price, description, file_path, downloads_count, rating_sum, rating_count FROM plugins WHERE id = ?', (plugin_id,))
+    data = cur.fetchone()
+    conn.close()
+    return data
 
 def increment_downloads(plugin_id, user_id):
     conn = sqlite3.connect('shop.db')
@@ -119,50 +128,72 @@ def increment_downloads(plugin_id, user_id):
     conn.commit()
     conn.close()
 
-def get_plugin_stats(plugin_id):
+def add_rating(plugin_id, user_id, rating):
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
-    cur.execute("SELECT downloads_count FROM plugins WHERE id = ?", (plugin_id,))
-    total = cur.fetchone()
+    # Проверяем, не оценивал ли уже
+    cur.execute("SELECT id FROM ratings WHERE plugin_id = ? AND user_id = ?", (plugin_id, user_id))
+    if cur.fetchone():
+        conn.close()
+        return False
+    cur.execute("INSERT INTO ratings (plugin_id, user_id, rating) VALUES (?, ?, ?)", (plugin_id, user_id, rating))
+    cur.execute("UPDATE plugins SET rating_sum = rating_sum + ?, rating_count = rating_count + 1 WHERE id = ?", (rating, plugin_id))
+    conn.commit()
     conn.close()
-    return total[0] if total else 0
+    return True
+
+def get_plugin_rating(plugin_id):
+    conn = sqlite3.connect('shop.db')
+    cur = conn.cursor()
+    cur.execute("SELECT rating_sum, rating_count FROM plugins WHERE id = ?", (plugin_id,))
+    rating_sum, rating_count = cur.fetchone()
+    conn.close()
+    if rating_count == 0:
+        return 0, 0
+    return round(rating_sum / rating_count, 1), rating_count
 
 def create_ticket(user_id, question):
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
-    cur.execute("REPLACE INTO tickets (user_id, question, status) VALUES (?, ?, 'open')", (user_id, question))
+    cur.execute("INSERT INTO tickets (user_id, question, status) VALUES (?, ?, 'open')", (user_id, question))
     conn.commit()
+    ticket_id = cur.lastrowid
     conn.close()
+    return ticket_id
 
-def close_ticket(user_id):
+def get_user_ticket(user_id):
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
-    cur.execute("DELETE FROM tickets WHERE user_id = ?", (user_id,))
-    conn.commit()
+    cur.execute("SELECT id, question, answer, status, created_at FROM tickets WHERE user_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1", (user_id,))
+    data = cur.fetchone()
     conn.close()
+    return data
 
-def is_ticket_open(user_id):
+def get_all_open_tickets():
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
-    cur.execute("SELECT status FROM tickets WHERE user_id = ?", (user_id,))
-    res = cur.fetchone()
-    conn.close()
-    return res is not None
-
-def get_all_tickets():
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute("SELECT user_id, question, created_at FROM tickets WHERE status = 'open'")
+    cur.execute("SELECT id, user_id, question, created_at FROM tickets WHERE status = 'open' ORDER BY created_at DESC")
     data = cur.fetchall()
     conn.close()
     return data
 
-# Проверка прав
-def is_owner(user_id):
-    return user_id in OWNERS
+def get_ticket_by_id(ticket_id):
+    conn = sqlite3.connect('shop.db')
+    cur = conn.cursor()
+    cur.execute("SELECT id, user_id, question, answer, status FROM tickets WHERE id = ?", (ticket_id,))
+    data = cur.fetchone()
+    conn.close()
+    return data
+
+def answer_ticket(ticket_id, answer):
+    conn = sqlite3.connect('shop.db')
+    cur = conn.cursor()
+    cur.execute("UPDATE tickets SET answer = ?, status = 'closed' WHERE id = ?", (answer, ticket_id))
+    conn.commit()
+    conn.close()
 
 def is_admin(user_id):
-    if is_owner(user_id):
+    if user_id in OWNERS:
         return True
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
@@ -193,43 +224,6 @@ def get_admins():
     conn.close()
     return data
 
-def add_owner(owner_id, added_by):
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO owners (user_id, added_by) VALUES (?, ?)", (owner_id, added_by))
-    conn.commit()
-    conn.close()
-    # Добавляем также в список OWNERS в памяти (но при перезапуске нужно будет обновить)
-    if owner_id not in OWNERS:
-        OWNERS.append(owner_id)
-
-def remove_owner(owner_id):
-    if owner_id in OWNERS and len(OWNERS) > 1:  # Нельзя удалить последнего владельца
-        OWNERS.remove(owner_id)
-        conn = sqlite3.connect('shop.db')
-        cur = conn.cursor()
-        cur.execute("DELETE FROM owners WHERE user_id = ?", (owner_id,))
-        conn.commit()
-        conn.close()
-        return True
-    return False
-
-def get_owners():
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute("SELECT user_id, added_by, added_at FROM owners")
-    data = cur.fetchall()
-    conn.close()
-    return data
-
-def get_total_downloads():
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute("SELECT SUM(downloads_count) FROM plugins")
-    total = cur.fetchone()[0]
-    conn.close()
-    return total if total else 0
-
 def get_total_users():
     conn = sqlite3.connect('shop.db')
     cur = conn.cursor()
@@ -238,244 +232,321 @@ def get_total_users():
     conn.close()
     return total
 
-# ---------- КЛАВИАТУРЫ ----------
-def main_menu():
+# ---------- КЛАВИАТУРЫ (Reply Keyboard - внизу экрана) ----------
+def get_main_keyboard():
     kb = [
-        [InlineKeyboardButton(text="📂 Категории", callback_data="categories")],
-        [InlineKeyboardButton(text="📋 Список товаров", callback_data="products")],
-        [InlineKeyboardButton(text="ℹ️ О магазине", callback_data="about")],
-        [InlineKeyboardButton(text="👤 Профиль", callback_data="profile")],
-        [InlineKeyboardButton(text="📜 Правила", callback_data="rules")],
-        [InlineKeyboardButton(text="🆘 Поддержка", callback_data="support")]
+        [KeyboardButton(text="📂 Категории")],
+        [KeyboardButton(text="📋 Список товаров")],
+        [KeyboardButton(text="ℹ️ О магазине"), KeyboardButton(text="👤 Профиль")],
+        [KeyboardButton(text="📜 Правила"), KeyboardButton(text="🆘 Поддержка")],
+        [KeyboardButton(text="⭐ Оценить плагин")]
     ]
-    return InlineKeyboardMarkup(inline_keyboard=kb)
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-def admin_panel_menu():
+def get_admin_keyboard():
     kb = [
-        [InlineKeyboardButton(text="📥 Загрузить плагин", callback_data="admin_upload")],
-        [InlineKeyboardButton(text="➕ Добавить категорию", callback_data="admin_add_category")],
-        [InlineKeyboardButton(text="🗑 Удалить категорию", callback_data="admin_del_category")],
-        [InlineKeyboardButton(text="👥 Управление админами", callback_data="admin_manage_admins")],
-        [InlineKeyboardButton(text="👑 Управление владельцами", callback_data="admin_manage_owners")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="🎫 Тикеты", callback_data="admin_tickets")],
-        [InlineKeyboardButton(text="📈 Рейтинг", callback_data="admin_rating")],
-        [InlineKeyboardButton(text="◀ Назад", callback_data="main_menu")]
+        [KeyboardButton(text="📥 Загрузить плагин")],
+        [KeyboardButton(text="➕ Добавить категорию"), KeyboardButton(text="🗑 Удалить категорию")],
+        [KeyboardButton(text="👥 Управление админами"), KeyboardButton(text="👑 Управление владельцами")],
+        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="🎫 Тикеты")],
+        [KeyboardButton(text="📈 Рейтинг"), KeyboardButton(text="◀ Назад в меню")]
     ]
-    return InlineKeyboardMarkup(inline_keyboard=kb)
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-def back_button():
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀ Назад", callback_data="main_menu")]])
+def back_keyboard():
+    kb = [[KeyboardButton(text="◀ Назад в меню")]]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# ---------- НАСТРОЙКА МЕНЮ В TELEGRAM (кнопки внизу экрана) ----------
-async def set_main_menu():
-    commands = [
-        BotCommand(command="start", description="🏠 Главное меню"),
-        BotCommand(command="menu", description="📋 Открыть меню"),
-        BotCommand(command="support", description="🆘 Поддержка"),
-        BotCommand(command="about", description="ℹ️ О магазине"),
-        BotCommand(command="profile", description="👤 Мой профиль"),
+def rating_keyboard(plugin_id):
+    kb = [
+        [KeyboardButton(text=f"⭐ 1"), KeyboardButton(text=f"⭐ 2"), KeyboardButton(text=f"⭐ 3")],
+        [KeyboardButton(text=f"⭐ 4"), KeyboardButton(text=f"⭐ 5"), KeyboardButton(text="◀ Назад в меню")]
     ]
-    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 # ---------- ОБРАБОТЧИКИ ----------
 @dp.message(Command("start"))
-@dp.message(Command("menu"))
+@dp.message(F.text == "◀ Назад в меню")
 async def start_cmd(message: types.Message):
     user_id = message.from_user.id
     register_user(user_id)
     
-    menu = main_menu()
     if is_admin(user_id):
-        menu.inline_keyboard.append([InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin_panel")])
+        await message.answer("⚙️ **Админ-панель RWPlugins**", reply_markup=get_admin_keyboard())
+    else:
+        await message.answer(
+            "🏪 **RWPlugins - Ключ к созданию большего!**\n\n"
+            "Добро пожаловать в магазин плагинов!",
+            reply_markup=get_main_keyboard()
+        )
+
+# ---------- КАТЕГОРИИ ----------
+@dp.message(F.text == "📂 Категории")
+async def show_categories(message: types.Message):
+    cats = get_categories()
+    if not cats:
+        await message.answer("❌ Категорий пока нет.", reply_markup=back_keyboard())
+        return
     
-    await message.answer(
-        "🏪 **RWPlugins - Ключ к созданию большего!**\n\n"
-        "Добро пожаловать в магазин плагинов!\n"
-        "Используйте кнопки ниже для навигации:",
-        reply_markup=menu
-    )
+    text = "📂 **Категории товаров:**\n\n"
+    kb = []
+    for cat_id, cat_name in cats:
+        text += f"• {cat_name}\n"
+        kb.append([KeyboardButton(text=f"📁 {cat_name}")])
+    kb.append([KeyboardButton(text="◀ Назад в меню")])
+    
+    await message.answer(text, reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
-@dp.message(Command("support"))
-async def support_cmd(message: types.Message):
-    await support_menu_handler(message)
+@dp.message(F.text.startswith("📁 "))
+async def show_plugins_in_category(message: types.Message):
+    cat_name = message.text.replace("📁 ", "")
+    
+    conn = sqlite3.connect('shop.db')
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM categories WHERE name = ?", (cat_name,))
+    cat = cur.fetchone()
+    if not cat:
+        await message.answer("❌ Категория не найдена")
+        return
+    cat_id = cat[0]
+    
+    cur.execute("SELECT id, name, price, downloads_count, rating_sum, rating_count FROM plugins WHERE category_id = ?", (cat_id,))
+    plugins = cur.fetchall()
+    conn.close()
+    
+    if not plugins:
+        await message.answer("❌ В этой категории пока нет плагинов.", reply_markup=back_keyboard())
+        return
+    
+    text = f"📁 **{cat_name}**\n\n"
+    kb = []
+    for pid, name, price, downloads, rating_sum, rating_count in plugins:
+        rating = round(rating_sum / rating_count, 1) if rating_count > 0 else 0
+        stars = "⭐" * int(rating) if rating > 0 else "Нет оценок"
+        text += f"🔹 **{name}**\n   💰 {price} ₽\n   ⬇️ {downloads}\n   🌟 {rating} {stars}\n\n"
+        kb.append([KeyboardButton(text=f"📥 Купить {name} ({price}₽)")])
+    
+    kb.append([KeyboardButton(text="◀ Назад в меню")])
+    await message.answer(text, reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
-async def support_menu_handler(message: types.Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✉️ Создать тикет", callback_data="create_ticket")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="main_menu")]
-    ])
-    await message.answer(
-        "🆘 **Техническая поддержка RWPlugins**\n\n"
-        "Нажмите «Создать тикет», чтобы отправить вопрос.",
-        reply_markup=kb
-    )
+# ---------- СПИСОК ТОВАРОВ ----------
+@dp.message(F.text == "📋 Список товаров")
+async def all_products(message: types.Message):
+    plugins = get_all_plugins()
+    if not plugins:
+        await message.answer("📭 Товаров пока нет.", reply_markup=back_keyboard())
+        return
+    
+    text = "📦 **Все товары RWPlugins:**\n\n"
+    kb = []
+    for pid, name, cat_id, price, desc, downloads, rating_sum, rating_count in plugins:
+        rating = round(rating_sum / rating_count, 1) if rating_count > 0 else 0
+        stars = "⭐" * int(rating) if rating > 0 else "Нет оценок"
+        text += f"🔹 **{name}**\n   💰 {price} ₽\n   ⬇️ {downloads}\n   🌟 {rating} {stars}\n   📝 {desc}\n\n"
+        kb.append([KeyboardButton(text=f"📥 Купить {name} ({price}₽)")])
+    
+    kb.append([KeyboardButton(text="◀ Назад в меню")])
+    await message.answer(text, reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
-@dp.message(Command("about"))
-async def about_cmd(message: types.Message):
-    await about_shop_handler(message)
+# ---------- ПОКУПКА ----------
+@dp.message(F.text.startswith("📥 Купить "))
+async def buy_plugin(message: types.Message):
+    plugin_name = message.text.replace("📥 Купить ", "").split(" (")[0]
+    
+    conn = sqlite3.connect('shop.db')
+    cur = conn.cursor()
+    cur.execute("SELECT id, file_path, price, name FROM plugins WHERE name = ?", (plugin_name,))
+    res = cur.fetchone()
+    conn.close()
+    
+    if not res:
+        await message.answer("❌ Плагин не найден")
+        return
+    
+    plugin_id, file_path, price, name = res
+    
+    if os.path.exists(file_path):
+        increment_downloads(plugin_id, message.from_user.id)
+        doc = FSInputFile(file_path)
+        await message.answer_document(doc, caption=f"✅ **{name}** успешно скачан!\n💰 Цена: {price} ₽")
+        
+        # Предлагаем оценить
+        kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=f"⭐ Оценить {name}")], [KeyboardButton(text="◀ Назад в меню")]], resize_keyboard=True)
+        await message.answer("⭐ Понравился плагин? Оцени его!", reply_markup=kb)
+    else:
+        await message.answer("❌ Файл временно недоступен. Обратитесь в поддержку.")
 
-async def about_shop_handler(message: types.Message):
+# ---------- ОЦЕНКА ПЛАГИНОВ ----------
+@dp.message(F.text.startswith("⭐ Оценить "))
+async def start_rating(message: types.Message, state: FSMContext):
+    plugin_name = message.text.replace("⭐ Оценить ", "")
+    
+    conn = sqlite3.connect('shop.db')
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM plugins WHERE name = ?", (plugin_name,))
+    res = cur.fetchone()
+    conn.close()
+    
+    if not res:
+        await message.answer("❌ Плагин не найден")
+        return
+    
+    plugin_id = res[0]
+    await state.update_data(plugin_id=plugin_id, plugin_name=plugin_name)
+    await message.answer(f"⭐ Оцените плагин **{plugin_name}** от 1 до 5:", reply_markup=rating_keyboard(plugin_id))
+    await state.set_state(RatingStates.waiting_for_rating)
+
+@dp.message(RatingStates.waiting_for_rating, F.text.startswith("⭐ "))
+async def process_rating(message: types.Message, state: FSMContext):
+    rating = int(message.text.replace("⭐ ", ""))
+    data = await state.get_data()
+    plugin_id = data.get("plugin_id")
+    plugin_name = data.get("plugin_name")
+    user_id = message.from_user.id
+    
+    if add_rating(plugin_id, user_id, rating):
+        rating_val, count = get_plugin_rating(plugin_id)
+        await message.answer(f"✅ Спасибо за оценку! 🌟 Средний рейтинг: {rating_val} ⭐ ({count} оценок)", reply_markup=get_main_keyboard())
+    else:
+        await message.answer("❌ Вы уже оценивали этот плагин!", reply_markup=get_main_keyboard())
+    
+    await state.clear()
+
+@dp.message(F.text == "⭐ Оценить плагин")
+async def rate_plugin_menu(message: types.Message):
+    plugins = get_all_plugins()
+    if not plugins:
+        await message.answer("📭 Нет плагинов для оценки.", reply_markup=back_keyboard())
+        return
+    
+    kb = []
+    for pid, name, cat_id, price, desc, downloads, rating_sum, rating_count in plugins:
+        kb.append([KeyboardButton(text=f"⭐ Оценить {name}")])
+    kb.append([KeyboardButton(text="◀ Назад в меню")])
+    
+    await message.answer("⭐ Выберите плагин для оценки:", reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
+
+# ---------- ОСТАЛЬНЫЕ КНОПКИ ----------
+@dp.message(F.text == "ℹ️ О магазине")
+async def about_shop(message: types.Message):
     text = "🏪 **RWPlugins - Ключ к созданию большего!**\n\n"
     text += "Мы создаём качественные плагины для Minecraft.\n"
     text += f"📅 Магазин работает с {SHOP_CREATION_DATE}\n\n"
     text += "В нашем ассортименте:\n"
-    text += "• PvP системы\n"
-    text += "• Экономика\n"
-    text += "• Босс-арены\n"
-    text += "• Кейсы и лутбоксы\n\n"
-    text += "💬 По вопросам: @owner_rwplugins"
-    await message.answer(text, reply_markup=back_button())
+    text += "• PvP системы\n• Экономика\n• Босс-арены\n• Кейсы и лутбоксы"
+    await message.answer(text, reply_markup=back_keyboard())
 
-@dp.message(Command("profile"))
-async def profile_cmd(message: types.Message):
-    await profile_handler(message)
-
-async def profile_handler(message: types.Message):
+@dp.message(F.text == "👤 Профиль")
+async def profile(message: types.Message):
     user_id = message.from_user.id
     text = f"👤 **Ваш профиль RWPlugins**\n\n"
     text += f"🆔 ID: {user_id}\n"
     text += f"📅 Дата регистрации: {datetime.now().strftime('%d.%m.%Y')}\n"
-    text += f"👑 Статус: {'Владелец' if is_owner(user_id) else f'Администратор' if is_admin(user_id) else 'Покупатель'}"
-    await message.answer(text, reply_markup=back_button())
+    text += f"👑 Статус: {'Владелец' if user_id in OWNERS else 'Администратор' if is_admin(user_id) else 'Покупатель'}"
+    await message.answer(text, reply_markup=back_keyboard())
 
-@dp.callback_query(F.data == "main_menu")
-async def back_to_main(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    menu = main_menu()
-    if is_admin(user_id):
-        menu.inline_keyboard.append([InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin_panel")])
-    
-    await callback.message.edit_text(
-        "🏪 **Главное меню RWPlugins**\n\nВыберите действие:",
-        reply_markup=menu
-    )
-
-@dp.callback_query(F.data == "categories")
-async def show_categories(callback: types.CallbackQuery):
-    cats = get_categories()
-    if not cats:
-        await callback.message.edit_text("❌ Категорий пока нет.", reply_markup=back_button())
-        return
-    kb = []
-    for cat_id, cat_name in cats:
-        kb.append([InlineKeyboardButton(text=f"📁 {cat_name}", callback_data=f"cat_{cat_id}_1")])
-    kb.append([InlineKeyboardButton(text="◀ Назад", callback_data="main_menu")])
-    await callback.message.edit_text("📂 **Категории товаров:**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-
-@dp.callback_query(F.data.startswith("cat_"))
-async def show_plugins(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    cat_id = int(parts[1])
-    page = int(parts[2]) if len(parts) > 2 else 1
-    plugins, total = get_plugins_by_category(cat_id, page=page, per_page=5)
-    total_pages = (total + 4) // 5
-    if not plugins:
-        await callback.message.edit_text("❌ В этой категории пока нет плагинов.", reply_markup=back_button())
-        return
-    text = f"📁 **Товары в категории:**\n\n"
-    for pid, name, desc, price, fpath, downloads in plugins:
-        text += f"🔹 **{name}**\n   💰 {price} ₽\n   ⬇️ {downloads}\n   📝 {desc}\n\n"
-    kb = []
-    for pid, name, desc, price, fpath, downloads in plugins:
-        kb.append([InlineKeyboardButton(text=f"📥 {name} ({price}₽)", callback_data=f"buy_{pid}")])
-    if total_pages > 1:
-        nav = []
-        if page > 1:
-            nav.append(InlineKeyboardButton(text="◀", callback_data=f"cat_{cat_id}_{page-1}"))
-        if page < total_pages:
-            nav.append(InlineKeyboardButton(text="▶", callback_data=f"cat_{cat_id}_{page+1}"))
-        if nav:
-            kb.append(nav)
-    kb.append([InlineKeyboardButton(text="◀ Назад", callback_data="categories")])
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-
-@dp.callback_query(F.data == "products")
-async def all_products(callback: types.CallbackQuery):
-    plugins, total = get_all_plugins(page=1, per_page=10)
-    if not plugins:
-        await callback.message.edit_text("📭 Товаров пока нет.", reply_markup=back_button())
-        return
-    text = "📦 **Все товары RWPlugins:**\n\n"
-    for pid, name, cat_name, price, desc, downloads in plugins:
-        text += f"🔹 **{name}**\n   📁 {cat_name}\n   💰 {price} ₽\n   ⬇️ {downloads}\n   📝 {desc}\n\n"
-    await callback.message.edit_text(text, reply_markup=back_button())
-
-@dp.callback_query(F.data.startswith("buy_"))
-async def buy_plugin(callback: types.CallbackQuery):
-    plugin_id = int(callback.data.split("_")[1])
-    user_id = callback.from_user.id
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute("SELECT file_path, name, price FROM plugins WHERE id = ?", (plugin_id,))
-    res = cur.fetchone()
-    conn.close()
-    if not res:
-        await callback.answer("❌ Плагин не найден", show_alert=True)
-        return
-    file_path, name, price = res
-    if os.path.exists(file_path):
-        increment_downloads(plugin_id, user_id)
-        doc = FSInputFile(file_path)
-        await callback.message.answer_document(doc, caption=f"✅ **{name}** успешно скачан!\n💰 Цена: {price} ₽")
-    else:
-        await callback.message.answer("❌ Файл временно недоступен. Обратитесь в поддержку.")
-    await callback.answer()
-
-@dp.callback_query(F.data == "about")
-async def about_shop(callback: types.CallbackQuery):
-    await about_shop_handler(callback.message)
-
-@dp.callback_query(F.data == "profile")
-async def show_profile(callback: types.CallbackQuery):
-    await profile_handler(callback.message)
-
-@dp.callback_query(F.data == "rules")
-async def show_rules(callback: types.CallbackQuery):
+@dp.message(F.text == "📜 Правила")
+async def rules(message: types.Message):
     text = "📜 **Правила магазина RWPlugins**\n\n"
     text += "1. Запрещён возврат средств после скачивания\n"
     text += "2. Все плагины проверены\n"
     text += "3. Техподдержка отвечает в течение 24 часов\n"
     text += "4. Запрещено распространять плагины\n\n"
     text += f"📅 Магазин работает с {SHOP_CREATION_DATE}"
-    await callback.message.edit_text(text, reply_markup=back_button())
+    await message.answer(text, reply_markup=back_keyboard())
 
-@dp.callback_query(F.data == "support")
-async def support_menu(callback: types.CallbackQuery):
-    await support_menu_handler(callback.message)
-
-@dp.callback_query(F.data == "create_ticket")
-async def start_ticket(callback: types.CallbackQuery, state: FSMContext):
-    if is_ticket_open(callback.from_user.id):
-        await callback.answer("❌ У вас уже есть активный тикет!", show_alert=True)
+# ---------- ТИКЕТЫ (ВНУТРИ БОТА, БЕЗ ЛС) ----------
+@dp.message(F.text == "🆘 Поддержка")
+async def support_start(message: types.Message, state: FSMContext):
+    existing_ticket = get_user_ticket(message.from_user.id)
+    if existing_ticket:
+        ticket_id, question, answer, status, created_at = existing_ticket
+        await message.answer(f"❌ У вас уже есть активный тикет #{ticket_id}!\nОжидайте ответа администратора.")
         return
-    await callback.message.edit_text("📝 Напишите ваш вопрос в одном сообщении:")
-    await state.set_state(TicketQuestion.waiting_for_question)
-    await callback.answer()
+    
+    await message.answer("📝 Напишите ваш вопрос подробно. Администратор ответит вам в этом чате:")
+    await state.set_state(TicketStates.waiting_for_question)
 
-@dp.message(StateFilter(TicketQuestion.waiting_for_question), F.text)
-async def receive_question(message: types.Message, state: FSMContext):
-    create_ticket(message.from_user.id, message.text)
-    await message.answer("✅ **Тикет создан!**\n\nТехподдержка ответит вам в ближайшее время.")
+@dp.message(TicketStates.waiting_for_question, F.text)
+async def create_ticket_handler(message: types.Message, state: FSMContext):
+    ticket_id = create_ticket(message.from_user.id, message.text)
+    await message.answer(f"✅ **Тикет #{ticket_id} создан!**\n\nАдминистратор ответит вам здесь. Ожидайте.")
     await state.clear()
+    
+    # Уведомляем админов
+    for admin_id in OWNERS:
+        try:
+            await bot.send_message(admin_id, f"🆕 **Новый тикет #{ticket_id}**\nОт: {message.from_user.id}\nВопрос: {message.text[:100]}...")
+        except:
+            pass
 
-# ---------- АДМИН-ПАНЕЛЬ ----------
-@dp.callback_query(F.data == "admin_panel")
-async def admin_panel(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ У вас нет прав администратора!", show_alert=True)
+# ---------- АДМИН: ПРОСМОТР ТИКЕТОВ ----------
+@dp.message(F.text == "🎫 Тикеты")
+async def admin_view_tickets(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет доступа")
         return
-    await callback.message.edit_text("⚙️ **Панель администратора RWPlugins**", reply_markup=admin_panel_menu())
+    
+    tickets = get_all_open_tickets()
+    if not tickets:
+        await message.answer("📭 Нет активных тикетов.", reply_markup=get_admin_keyboard())
+        return
+    
+    text = "🎫 **Активные тикеты:**\n\n"
+    kb = []
+    for ticket_id, user_id, question, created_at in tickets:
+        text += f"#{ticket_id} | От: {user_id}\n📝 {question[:50]}...\n🕐 {created_at}\n\n"
+        kb.append([KeyboardButton(text=f"📝 Ответить на тикет #{ticket_id}")])
+    
+    kb.append([KeyboardButton(text="◀ Назад в меню")])
+    await message.answer(text, reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
+    await state.set_state(TicketStates.admin_waiting_for_ticket_selection)
 
-# Загрузка плагина
-@dp.callback_query(F.data == "admin_upload")
-async def admin_upload_start(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет прав", show_alert=True)
+@dp.message(TicketStates.admin_waiting_for_ticket_selection, F.text.startswith("📝 Ответить на тикет #"))
+async def admin_reply_to_ticket(message: types.Message, state: FSMContext):
+    ticket_id = int(message.text.split("#")[1])
+    ticket = get_ticket_by_id(ticket_id)
+    
+    if not ticket:
+        await message.answer("❌ Тикет не найден")
+        await state.clear()
         return
-    await callback.message.edit_text("📎 Отправьте файл плагина (zip, py, jar):")
+    
+    await state.update_data(ticket_id=ticket_id, user_id=ticket[1])
+    await message.answer(f"📝 Введите ответ для пользователя (тикет #{ticket_id}):\n\nВопрос: {ticket[2]}")
+    await state.set_state(TicketStates.admin_waiting_for_reply)
+
+@dp.message(TicketStates.admin_waiting_for_reply, F.text)
+async def admin_send_reply(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    ticket_id = data.get("ticket_id")
+    user_id = data.get("user_id")
+    answer = message.text
+    
+    # Сохраняем ответ в БД
+    answer_ticket(ticket_id, answer)
+    
+    # Отправляем ответ пользователю
+    try:
+        await bot.send_message(
+            user_id,
+            f"📨 **Ответ поддержки** (тикет #{ticket_id})\n\n{answer}\n\n✅ Тикет закрыт. Спасибо за обращение!"
+        )
+        await message.answer(f"✅ Ответ отправлен пользователю {user_id}. Тикет #{ticket_id} закрыт.")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось отправить: {e}")
+    
+    await state.clear()
+    await message.answer("⚙️ Админ-панель", reply_markup=get_admin_keyboard())
+
+# ---------- АДМИН-КНОПКИ ----------
+@dp.message(F.text == "📥 Загрузить плагин")
+async def admin_upload_start(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет доступа")
+        return
+    await message.answer("📎 Отправьте файл плагина:")
     await state.set_state(UploadPlugin.waiting_for_file)
-    await callback.answer()
 
 @dp.message(StateFilter(UploadPlugin.waiting_for_file), F.document)
 async def get_plugin_file(message: types.Message, state: FSMContext):
@@ -491,7 +562,7 @@ async def get_plugin_file(message: types.Message, state: FSMContext):
 @dp.message(StateFilter(UploadPlugin.waiting_for_name), F.text)
 async def get_plugin_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("💰 Введите **цену** в рублях (например: 350):")
+    await message.answer("💰 Введите **цену** в рублях:")
     await state.set_state(UploadPlugin.waiting_for_price)
 
 @dp.message(StateFilter(UploadPlugin.waiting_for_price), F.text)
@@ -501,221 +572,213 @@ async def get_plugin_price(message: types.Message, state: FSMContext):
         await state.update_data(price=price)
         cats = get_categories()
         if not cats:
-            await message.answer("⚠️ Сначала создайте категорию в админ-панели")
+            await message.answer("⚠️ Сначала создайте категорию!")
             await state.clear()
             return
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=cat_name, callback_data=f"upload_cat_{cat_id}")] for cat_id, cat_name in cats
-        ])
+        kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=cat_name)] for _, cat_name in cats], resize_keyboard=True)
         await message.answer("📂 Выберите категорию:", reply_markup=kb)
         await state.set_state(UploadPlugin.waiting_for_category)
     except:
         await message.answer("❌ Введите число!")
 
-@dp.callback_query(StateFilter(UploadPlugin.waiting_for_category), F.data.startswith("upload_cat_"))
-async def get_plugin_category(callback: types.CallbackQuery, state: FSMContext):
-    cat_id = int(callback.data.split("_")[2])
-    await state.update_data(category_id=cat_id)
-    await callback.message.answer("📝 Введите **описание** плагина:")
+@dp.message(StateFilter(UploadPlugin.waiting_for_category), F.text)
+async def get_plugin_category(message: types.Message, state: FSMContext):
+    cat_name = message.text
+    conn = sqlite3.connect('shop.db')
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM categories WHERE name = ?", (cat_name,))
+    cat = cur.fetchone()
+    conn.close()
+    
+    if not cat:
+        await message.answer("❌ Категория не найдена!")
+        return
+    
+    await state.update_data(category_id=cat[0])
+    await message.answer("📝 Введите **описание** плагина:")
     await state.set_state(UploadPlugin.waiting_for_description)
-    await callback.answer()
 
 @dp.message(StateFilter(UploadPlugin.waiting_for_description), F.text)
 async def finish_upload(message: types.Message, state: FSMContext):
     data = await state.get_data()
     add_plugin(data['name'], data['category_id'], data['price'], message.text, data['file_path'])
-    await message.answer(f"✅ **Плагин {data['name']} добавлен!**")
+    await message.answer(f"✅ **Плагин {data['name']} добавлен!**", reply_markup=get_admin_keyboard())
     await state.clear()
 
-# Добавление категории
-@dp.callback_query(F.data == "admin_add_category")
-async def admin_add_category_start(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет прав", show_alert=True)
+@dp.message(F.text == "➕ Добавить категорию")
+async def admin_add_category_start(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет доступа")
         return
-    await callback.message.edit_text("📝 Введите название новой категории:")
+    await message.answer("📝 Введите название новой категории:")
     await state.set_state("waiting_for_category")
-    await callback.answer()
 
 @dp.message(StateFilter("waiting_for_category"), F.text)
 async def admin_add_category(message: types.Message, state: FSMContext):
     add_category(message.text)
-    await message.answer(f"✅ Категория **{message.text}** добавлена!")
+    await message.answer(f"✅ Категория **{message.text}** добавлена!", reply_markup=get_admin_keyboard())
     await state.clear()
 
-# Удаление категории
-@dp.callback_query(F.data == "admin_del_category")
-async def admin_del_category_menu(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет прав", show_alert=True)
+@dp.message(F.text == "🗑 Удалить категорию")
+async def admin_del_category_menu(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет доступа")
         return
     cats = get_categories()
     if not cats:
-        await callback.message.edit_text("❌ Нет категорий для удаления.", reply_markup=back_button())
+        await message.answer("❌ Нет категорий для удаления.")
         return
-    kb = [[InlineKeyboardButton(text=f"🗑 {cat_name}", callback_data=f"del_cat_{cat_id}")] for cat_id, cat_name in cats]
-    kb.append([InlineKeyboardButton(text="◀ Назад", callback_data="admin_panel")])
-    await callback.message.edit_text("🗑 Выберите категорию для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    kb = [[KeyboardButton(text=f"🗑 {cat_name}")] for _, cat_name in cats]
+    kb.append([KeyboardButton(text="◀ Назад в меню")])
+    await message.answer("🗑 Выберите категорию для удаления:", reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
-@dp.callback_query(F.data.startswith("del_cat_"))
-async def admin_del_category(callback: types.CallbackQuery):
-    cat_id = int(callback.data.split("_")[2])
-    delete_category(cat_id)
-    await callback.message.edit_text("✅ Категория удалена!")
-    await callback.answer()
+@dp.message(F.text.startswith("🗑 "))
+async def confirm_delete_category(message: types.Message):
+    cat_name = message.text.replace("🗑 ", "")
+    conn = sqlite3.connect('shop.db')
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM categories WHERE name = ?", (cat_name,))
+    cat_id = cur.fetchone()
+    if cat_id:
+        delete_category(cat_id[0])
+        await message.answer(f"✅ Категория '{cat_name}' удалена!")
+    else:
+        await message.answer("❌ Категория не найдена")
+    await message.answer("⚙️ Админ-панель", reply_markup=get_admin_keyboard())
 
-# Управление админами
-@dp.callback_query(F.data == "admin_manage_admins")
-async def admin_manage_admins(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет прав", show_alert=True)
+@dp.message(F.text == "👥 Управление админами")
+async def admin_manage_admins(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет доступа")
         return
     
     kb = [
-        [InlineKeyboardButton(text="➕ Добавить админа", callback_data="admin_add_admin")],
-        [InlineKeyboardButton(text="🗑 Удалить админа", callback_data="admin_remove_admin")],
-        [InlineKeyboardButton(text="📋 Список админов", callback_data="admin_list_admins")],
-        [InlineKeyboardButton(text="◀ Назад", callback_data="admin_panel")]
+        [KeyboardButton(text="➕ Добавить админа")],
+        [KeyboardButton(text="🗑 Удалить админа")],
+        [KeyboardButton(text="📋 Список админов")],
+        [KeyboardButton(text="◀ Назад в меню")]
     ]
-    await callback.message.edit_text("👥 **Управление администраторами**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await message.answer("👥 **Управление администраторами**", reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
-@dp.callback_query(F.data == "admin_add_admin")
-async def admin_add_admin_start(callback: types.CallbackQuery, state: FSMContext):
-    if not is_owner(callback.from_user.id):
-        await callback.answer("⛔ Только владельцы могут добавлять админов!", show_alert=True)
+@dp.message(F.text == "➕ Добавить админа")
+async def add_admin_start(message: types.Message, state: FSMContext):
+    if message.from_user.id not in OWNERS:
+        await message.answer("⛔ Только владельцы могут добавлять админов!")
         return
-    await callback.message.edit_text("📝 Введите Telegram ID пользователя:")
+    await message.answer("📝 Введите Telegram ID пользователя:")
     await state.set_state("waiting_for_admin_id")
-    await callback.answer()
 
 @dp.message(StateFilter("waiting_for_admin_id"), F.text)
-async def admin_add_admin(message: types.Message, state: FSMContext):
+async def add_admin_process(message: types.Message, state: FSMContext):
     try:
         admin_id = int(message.text)
         add_admin(admin_id, message.from_user.id)
-        await message.answer(f"✅ Пользователь `{admin_id}` теперь администратор!")
+        await message.answer(f"✅ Пользователь `{admin_id}` теперь администратор!", reply_markup=get_admin_keyboard())
     except:
         await message.answer("❌ Неверный ID!")
     await state.clear()
 
-@dp.callback_query(F.data == "admin_remove_admin")
-async def admin_remove_admin_menu(callback: types.CallbackQuery):
-    if not is_owner(callback.from_user.id):
-        await callback.answer("⛔ Только владельцы могут удалять админов!", show_alert=True)
+@dp.message(F.text == "🗑 Удалить админа")
+async def remove_admin_menu(message: types.Message):
+    if message.from_user.id not in OWNERS:
+        await message.answer("⛔ Только владельцы могут удалять админов!")
         return
     admins = get_admins()
     if not admins:
-        await callback.message.edit_text("❌ Нет администраторов для удаления.", reply_markup=back_button())
+        await message.answer("❌ Нет администраторов для удаления.")
         return
-    kb = [[InlineKeyboardButton(text=f"🗑 ID: {admin_id}", callback_data=f"remove_admin_{admin_id}")] for admin_id, _, _ in admins]
-    kb.append([InlineKeyboardButton(text="◀ Назад", callback_data="admin_manage_admins")])
-    await callback.message.edit_text("🗑 Выберите администратора для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    kb = [[KeyboardButton(text=f"🗑 {admin_id}")] for admin_id, _, _ in admins]
+    kb.append([KeyboardButton(text="◀ Назад в меню")])
+    await message.answer("🗑 Выберите администратора для удаления:", reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
-@dp.callback_query(F.data.startswith("remove_admin_"))
-async def admin_remove_admin(callback: types.CallbackQuery):
-    admin_id = int(callback.data.split("_")[2])
-    remove_admin(admin_id)
-    await callback.message.edit_text(f"✅ Администратор {admin_id} удалён!")
-    await callback.answer()
+@dp.message(F.text.startswith("🗑 ") and F.text != "🗑 Удалить категорию")
+async def remove_admin_process(message: types.Message):
+    try:
+        admin_id = int(message.text.replace("🗑 ", ""))
+        if admin_id in OWNERS:
+            await message.answer("❌ Нельзя удалить владельца через удаление админа!")
+            return
+        remove_admin(admin_id)
+        await message.answer(f"✅ Администратор {admin_id} удалён!")
+    except:
+        await message.answer("❌ Ошибка!")
+    await message.answer("⚙️ Админ-панель", reply_markup=get_admin_keyboard())
 
-@dp.callback_query(F.data == "admin_list_admins")
-async def admin_list_admins(callback: types.CallbackQuery):
+@dp.message(F.text == "📋 Список админов")
+async def list_admins(message: types.Message):
     admins = get_admins()
-    owners_list = OWNERS
-    
     text = "👑 **Владельцы:**\n"
-    for owner_id in owners_list:
+    for owner_id in OWNERS:
         text += f"• `{owner_id}`\n"
-    
     text += "\n👥 **Администраторы:**\n"
     if admins:
         for admin_id, added_by, added_at in admins:
             text += f"• `{admin_id}` (добавлен {added_at[:10]})\n"
     else:
         text += "Нет администраторов\n"
-    
-    await callback.message.edit_text(text, reply_markup=back_button())
+    await message.answer(text, reply_markup=get_admin_keyboard())
 
-# Управление владельцами
-@dp.callback_query(F.data == "admin_manage_owners")
-async def admin_manage_owners(callback: types.CallbackQuery):
-    if not is_owner(callback.from_user.id):
-        await callback.answer("⛔ Только владельцы могут управлять владельцами!", show_alert=True)
+@dp.message(F.text == "👑 Управление владельцами")
+async def owner_manage(message: types.Message):
+    if message.from_user.id not in OWNERS:
+        await message.answer("⛔ Только владельцы могут управлять владельцами!")
         return
     
     kb = [
-        [InlineKeyboardButton(text="➕ Добавить владельца", callback_data="admin_add_owner")],
-        [InlineKeyboardButton(text="🗑 Удалить владельца", callback_data="admin_remove_owner")],
-        [InlineKeyboardButton(text="📋 Список владельцев", callback_data="admin_list_owners")],
-        [InlineKeyboardButton(text="◀ Назад", callback_data="admin_panel")]
+        [KeyboardButton(text="➕ Добавить владельца")],
+        [KeyboardButton(text="📋 Список владельцев")],
+        [KeyboardButton(text="◀ Назад в меню")]
     ]
-    await callback.message.edit_text("👑 **Управление владельцами**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await message.answer("👑 **Управление владельцами**", reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
-@dp.callback_query(F.data == "admin_add_owner")
-async def admin_add_owner_start(callback: types.CallbackQuery, state: FSMContext):
-    if not is_owner(callback.from_user.id):
-        await callback.answer("⛔ Нет прав!", show_alert=True)
+@dp.message(F.text == "➕ Добавить владельца")
+async def add_owner_start(message: types.Message, state: FSMContext):
+    if message.from_user.id not in OWNERS:
+        await message.answer("⛔ Нет прав!")
         return
-    await callback.message.edit_text("📝 Введите Telegram ID нового владельца:")
+    await message.answer("📝 Введите Telegram ID нового владельца:")
     await state.set_state("waiting_for_owner_id")
-    await callback.answer()
 
 @dp.message(StateFilter("waiting_for_owner_id"), F.text)
-async def admin_add_owner(message: types.Message, state: FSMContext):
+async def add_owner_process(message: types.Message, state: FSMContext):
     try:
         owner_id = int(message.text)
-        add_owner(owner_id, message.from_user.id)
-        await message.answer(f"✅ Пользователь `{owner_id}` теперь владелец!")
+        if owner_id not in OWNERS:
+            OWNERS.append(owner_id)
+            conn = sqlite3.connect('shop.db')
+            cur = conn.cursor()
+            cur.execute("INSERT OR IGNORE INTO owners (user_id, added_by) VALUES (?, ?)", (owner_id, message.from_user.id))
+            conn.commit()
+            conn.close()
+            await message.answer(f"✅ Пользователь `{owner_id}` теперь владелец!", reply_markup=get_admin_keyboard())
+        else:
+            await message.answer("❌ Пользователь уже владелец!")
     except:
         await message.answer("❌ Неверный ID!")
     await state.clear()
 
-@dp.callback_query(F.data == "admin_remove_owner")
-async def admin_remove_owner_menu(callback: types.CallbackQuery):
-    if not is_owner(callback.from_user.id):
-        await callback.answer("⛔ Нет прав!", show_alert=True)
-        return
-    
-    if len(OWNERS) <= 1:
-        await callback.message.edit_text("❌ Нельзя удалить единственного владельца!", reply_markup=back_button())
-        return
-    
-    kb = [[InlineKeyboardButton(text=f"🗑 ID: {owner_id}", callback_data=f"remove_owner_{owner_id}")] for owner_id in OWNERS if owner_id != callback.from_user.id]
-    kb.append([InlineKeyboardButton(text="◀ Назад", callback_data="admin_manage_owners")])
-    await callback.message.edit_text("🗑 Выберите владельца для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-
-@dp.callback_query(F.data.startswith("remove_owner_"))
-async def admin_remove_owner(callback: types.CallbackQuery):
-    owner_id = int(callback.data.split("_")[2])
-    if remove_owner(owner_id):
-        await callback.message.edit_text(f"✅ Владелец {owner_id} удалён!")
-    else:
-        await callback.message.edit_text("❌ Нельзя удалить единственного владельца!")
-    await callback.answer()
-
-@dp.callback_query(F.data == "admin_list_owners")
-async def admin_list_owners(callback: types.CallbackQuery):
+@dp.message(F.text == "📋 Список владельцев")
+async def list_owners(message: types.Message):
     text = "👑 **Список владельцев:**\n\n"
     for owner_id in OWNERS:
         text += f"• `{owner_id}`\n"
-    await callback.message.edit_text(text, reply_markup=back_button())
+    await message.answer(text, reply_markup=get_admin_keyboard())
 
-# Статистика
-@dp.callback_query(F.data == "admin_stats")
-async def admin_stats(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет прав", show_alert=True)
+@dp.message(F.text == "📊 Статистика")
+async def admin_stats(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет доступа")
         return
     
     users = get_total_users()
-    plugins_count = len(get_all_plugins()[0])
-    total_downloads = get_total_downloads()
-    tickets = len(get_all_tickets())
+    plugins = get_all_plugins()
+    total_downloads = sum(p[5] for p in plugins)
+    tickets = len(get_all_open_tickets())
     categories = len(get_categories())
     
     text = f"📊 **Статистика RWPlugins**\n\n"
     text += f"👥 Пользователей: {users}\n"
-    text += f"📦 Плагинов: {plugins_count}\n"
+    text += f"📦 Плагинов: {len(plugins)}\n"
     text += f"📁 Категорий: {categories}\n"
     text += f"⬇️ Всего скачиваний: {total_downloads}\n"
     text += f"🎫 Активных тикетов: {tickets}\n"
@@ -723,40 +786,33 @@ async def admin_stats(callback: types.CallbackQuery):
     text += f"👥 Администраторов: {len(get_admins())}\n"
     text += f"📅 Магазин работает с {SHOP_CREATION_DATE}"
     
-    await callback.message.edit_text(text, reply_markup=back_button())
+    await message.answer(text, reply_markup=get_admin_keyboard())
 
-@dp.callback_query(F.data == "admin_tickets")
-async def admin_tickets(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет прав", show_alert=True)
+@dp.message(F.text == "📈 Рейтинг")
+async def admin_rating(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет доступа")
         return
-    tickets = get_all_tickets()
-    if not tickets:
-        await callback.message.edit_text("📭 Нет активных тикетов.", reply_markup=back_button())
-        return
-    text = "🎫 **Активные тикеты:**\n\n"
-    for user_id, question, created_at in tickets:
-        text += f"👤 ID: {user_id}\n❓ {question[:50]}...\n🕐 {created_at}\n━━━━━━━━━━\n"
-    text += "\n💡 Ответьте пользователю в ЛС"
-    await callback.message.edit_text(text, reply_markup=back_button())
-
-@dp.callback_query(F.data == "admin_rating")
-async def admin_rating(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет прав", show_alert=True)
-        return
-    conn = sqlite3.connect('shop.db')
-    cur = conn.cursor()
-    cur.execute("SELECT name, downloads_count FROM plugins ORDER BY downloads_count DESC LIMIT 10")
-    plugins = cur.fetchall()
-    conn.close()
+    
+    plugins = get_all_plugins()
     if not plugins:
-        await callback.message.edit_text("📭 Нет плагинов для рейтинга.", reply_markup=back_button())
+        await message.answer("📭 Нет плагинов для рейтинга.")
         return
-    text = "🏆 **Топ-10 плагинов RWPlugins:**\n\n"
-    for i, (name, downloads) in enumerate(plugins, 1):
-        text += f"{i}. **{name}** — {downloads} ⬇️\n"
-    await callback.message.edit_text(text, reply_markup=back_button())
+    
+    # Сортируем по рейтингу
+    plugins_with_rating = []
+    for pid, name, cat_id, price, desc, downloads, rating_sum, rating_count in plugins:
+        rating = round(rating_sum / rating_count, 1) if rating_count > 0 else 0
+        plugins_with_rating.append((name, rating, downloads, rating_count))
+    
+    plugins_with_rating.sort(key=lambda x: x[1], reverse=True)
+    
+    text = "🏆 **Топ плагинов по рейтингу:**\n\n"
+    for i, (name, rating, downloads, count) in enumerate(plugins_with_rating[:10], 1):
+        stars = "⭐" * int(rating)
+        text += f"{i}. **{name}**\n   🌟 {rating} {stars}\n   ⬇️ {downloads} скачиваний\n   📊 {count} оценок\n\n"
+    
+    await message.answer(text, reply_markup=get_admin_keyboard())
 
 # ---------- ЗАПУСК ----------
 async def main():
@@ -769,12 +825,8 @@ async def main():
     add_category("Экономика")
     add_category("Боссы")
     
-    # Настраиваем меню в Telegram
-    await set_main_menu()
-    
     print(f"✅ Бот RWPlugins успешно запущен!")
     print(f"👑 Владельцы: {OWNERS}")
-    print(f"📅 Дата создания магазина: {SHOP_CREATION_DATE}")
     
     await dp.start_polling(bot)
 
