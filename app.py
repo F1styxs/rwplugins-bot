@@ -1,8 +1,8 @@
 from main import main
 import asyncio
 from flask import Flask
-import threading
 import os
+import threading
 
 app = Flask(__name__)
 
@@ -15,12 +15,16 @@ def health():
     return "OK"
 
 def run_bot():
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"Бот упал с ошибкой: {e}")
 
 if __name__ == "__main__":
-    # Запускаем бота в отдельном потоке
-    bot_thread = threading.Thread(target=run_bot)
+    # Запускаем бота в потоке
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
-    # Запускаем Flask сервер для health check
+    
+    # Запускаем Flask сервер
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
