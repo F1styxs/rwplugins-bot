@@ -4,7 +4,7 @@ import sqlite3
 import logging
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -38,6 +38,7 @@ class TicketStates(StatesGroup):
     waiting_for_question = State()
     admin_waiting_for_reply = State()
     admin_waiting_for_ticket_selection = State()
+    waiting_for_ticket_message = State()
 
 class RatingStates(StatesGroup):
     waiting_for_rating = State()
@@ -292,12 +293,10 @@ def get_admin_panel_keyboard():
 def back_keyboard():
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Назад в меню")]], resize_keyboard=True)
 
-def rating_keyboard(plugin_name):
-    kb = [
-        [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
-        [KeyboardButton(text="4"), KeyboardButton(text="5")],
-        [KeyboardButton(text="Назад в меню")]
-    ]
+def rating_keyboard():
+    kb = [[KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
+          [KeyboardButton(text="4"), KeyboardButton(text="5")],
+          [KeyboardButton(text="Назад в меню")]]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 # Обработчики
@@ -306,11 +305,21 @@ async def start_cmd(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.full_name or message.from_user.username or str(user_id)
     register_user(user_id, username)
-    
     if is_admin(user_id):
         await message.answer(f"Добро пожаловать в RWPlugins!\nВаша роль: {'Владелец' if user_id in OWNERS else 'Администратор'}", reply_markup=get_admin_keyboard())
     else:
         await message.answer("Добро пожаловать в RWPlugins!\nИспользуйте кнопки для навигации.", reply_markup=get_main_keyboard())
+
+@dp.message(Command("getdb"))
+async def get_database(message: types.Message):
+    if message.from_user.id not in OWNERS:
+        await message.answer("Нет доступа!")
+        return
+    if os.path.exists("shop.db"):
+        doc = FSInputFile("shop.db")
+        await message.answer_document(doc, caption="shop.db")
+    else:
+        await message.answer("Файл не найден!")
 
 @dp.message(F.text == "Назад в меню")
 async def back_to_menu(message: types.Message):
@@ -457,7 +466,7 @@ async def start_rating(message: types.Message, state: FSMContext):
         return
     plugin_id = res[0]
     await state.update_data(plugin_id=plugin_id, plugin_name=plugin_name)
-    await message.answer(f"Оцените плагин {plugin_name} от 1 до 5:", reply_markup=rating_keyboard(plugin_name))
+    await message.answer(f"Оцените плагин {plugin_name} от 1 до 5:", reply_markup=rating_keyboard())
     await state.set_state(RatingStates.waiting_for_rating)
 
 @dp.message(RatingStates.waiting_for_rating, F.text.in_(["1", "2", "3", "4", "5"]))
@@ -508,17 +517,18 @@ async def rules(message: types.Message):
     text = "Правила магазина RWPlugins\n\n1. Запрещён возврат средств после скачивания\n2. Все плагины проверены\n3. Техподдержка отвечает в течение 24 часов\n4. Запрещено распространять плагины"
     await message.answer(text, reply_markup=back_keyboard())
 
-# Поддержка (тикеты с перепиской)
+# Поддержка (тикеты)
 @dp.message(F.text == "Поддержка")
 async def support_start(message: types.Message, state: FSMContext):
     existing_ticket = get_user_ticket(message.from_user.id)
     if existing_ticket:
-        ticket_id, question, answer, status, created_at = existing_ticket
+        ticket_id = existing_ticket[0]
         kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Добавить сообщение в тикет")], [KeyboardButton(text="Назад в меню")]], resize_keyboard=True)
-        await message.answer(f"У вас уже есть активный тикет #{ticket_id}!\nВопрос: {question}\n\nОжидайте ответа администратора или добавьте новое сообщение.", reply_markup=kb)
-        await state.set_state(TicketStates.waiting_for_question)
+        await message.answer(f"У вас уже есть активный тикет #{ticket_id}!\n\nОжидайте ответа администратора или добавьте новое сообщение.", reply_markup=kb)
+        await state.update_data(ticket_id=ticket_id)
+        await state.set_state(TicketStates.waiting_for_ticket_message)
         return
-    await message.answer("Создать тикет?\n\nНапишите ваш вопрос подробно. Администратор ответит вам в этом чате.\n\nЕсли передумали - нажмите Назад в меню.")
+    await message.answer("Напишите ваш вопрос подробно. Администратор ответит вам в этом чате.\n\nЕсли передумали - нажмите Назад в меню.")
     await state.set_state(TicketStates.waiting_for_question)
 
 @dp.message(TicketStates.waiting_for_question, F.text)
@@ -541,21 +551,23 @@ async def create_ticket_handler(message: types.Message, state: FSMContext):
         except:
             pass
 
-@dp.message(F.text == "Добавить сообщение в тикет")
+@dp.message(StateFilter(TicketStates.waiting_for_ticket_message), F.text == "Добавить сообщение в тикет")
 async def add_to_ticket(message: types.Message, state: FSMContext):
-    ticket = get_user_ticket(message.from_user.id)
-    if not ticket:
-        await message.answer("У вас нет активных тикетов.")
-        return
-    ticket_id = ticket[0]
-    await state.update_data(ticket_id=ticket_id)
     await message.answer("Напишите новое сообщение для поддержки:")
-    await state.set_state("waiting_for_ticket_message")
+    await state.set_state("waiting_for_ticket_message_text")
 
-@dp.message(StateFilter("waiting_for_ticket_message"), F.text)
+@dp.message(StateFilter("waiting_for_ticket_message_text"), F.text)
 async def process_ticket_message(message: types.Message, state: FSMContext):
     data = await state.get_data()
     ticket_id = data.get("ticket_id")
+    if not ticket_id:
+        ticket = get_user_ticket(message.from_user.id)
+        if ticket:
+            ticket_id = ticket[0]
+        else:
+            await message.answer("Тикет не найден!")
+            await state.clear()
+            return
     add_message_to_ticket(ticket_id, message.text, False)
     await message.answer("Сообщение добавлено в тикет! Администратор ответит вам.", reply_markup=get_main_keyboard() if not is_admin(message.from_user.id) else get_admin_keyboard())
     for admin_id in OWNERS:
